@@ -1,6 +1,10 @@
 import Foundation
 import simd
 
+private extension simd_quatf {
+    static let id = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
+}
+
 #if canImport(RealityKit)
 import RealityKit
 
@@ -20,10 +24,20 @@ public final class RealityKitSkeletonDriver {
     /// because the two rigs have different bone lengths.
     public var rotationOnly: Bool = true
 
-    /// ARKit neutral (rest) local rotation per bare Mixamo bone name, when available.
-    /// When set, `apply` uses delta retargeting (`bindRot * restRot⁻¹ * currentRot`),
-    /// which respects both rigs' bind poses. Without it, falls back to absolute rotation.
-    private var restRotByBone: [String: simd_quatf] = [:]
+    /// ARKit rest LOCAL (parent-relative) rotation per joint, from the recorded rest pose.
+    /// Motion is computed in WORLD/model space (frame-independent) so per-bone local-axis
+    /// differences between the ARKit and Mixamo rigs don't skew the direction of motion.
+    private var arkitRestLocalRot: [ARKitBodyJoint: simd_quatf] = [:]
+    /// Mixamo bind LOCAL rotation per joint (from the rig's bind pose).
+    private var mixamoBindLocalRot: [ARKitBodyJoint: simd_quatf] = [:]
+    /// Rig joint index per body joint, so we write back to the right transform slot.
+    private var indexForJoint: [ARKitBodyJoint: Int] = [:]
+    /// One primary ARKit joint per Mixamo bone, in parent-first order (the first joint
+    /// mapping to each bone). ARKit's spine has more joints than Mixamo's, so collapsing
+    /// to one-per-bone keeps the world accumulation consistent between the two rigs.
+    private var primaryJoints: [ARKitBodyJoint] = []
+    /// Each primary joint's parent primary (nearest ancestor with a different bone).
+    private var parentPrimary: [ARKitBodyJoint: ARKitBodyJoint] = [:]
 
     public init(model: ModelEntity, retargeter: MixamoRetargeter = MixamoRetargeter()) {
         self.model = model
@@ -31,36 +45,65 @@ public final class RealityKitSkeletonDriver {
         resolveJointNames()
     }
 
-    /// Which ARKit joint drives each Mixamo bone (last mapping wins, matching the
-    /// retargeter's spine-chain collapse). Used to read the current raw rotation from
-    /// the frame in the SAME ARKit local frame as the rest, so the delta is consistent.
-    private var jointForBone: [String: ARKitBodyJoint] = [:]
-
-    /// Supplies the ARKit neutral pose (from `ARKitBodyAnim.restPose`) to enable delta
-    /// retargeting. Keys are ARKit joint raw names; the last joint mapping to each Mixamo
-    /// bone wins (matches the retargeter's collapse of the spine chain).
+    /// Supplies the ARKit neutral (rest) pose to enable world-space delta retargeting.
+    /// Keys are ARKit joint raw names. Requires the rig joints to be resolved first.
     public func setRestPose(_ restPose: [String: AnimTransform]) {
-        var map: [String: simd_quatf] = [:]
-        var joints: [String: ARKitBodyJoint] = [:]
+        var rest: [ARKitBodyJoint: simd_quatf] = [:]
         for joint in ARKitBodyJoint.allCases {
-            guard let bone = joint.mixamoBoneName,
-                  let rest = restPose[joint.rawValue] else { continue }
-            map[bone] = simd_quatf(rest.matrix)
-            joints[bone] = joint
+            guard let t = restPose[joint.rawValue] else { continue }
+            rest[joint] = simd_quatf(t.matrix)
         }
-        restRotByBone = map
-        jointForBone = joints
+        arkitRestLocalRot = rest
     }
 
-    public var hasRestPose: Bool { !restRotByBone.isEmpty }
+    public var hasRestPose: Bool { !arkitRestLocalRot.isEmpty }
 
     private func resolveJointNames() {
         guard let model else { return }
         // ModelEntity exposes joint names via `jointNames`.
+        let boneToJoint: [String: ARKitBodyJoint] = {
+            var m: [String: ARKitBodyJoint] = [:]
+            for j in ARKitBodyJoint.allCases { if let b = j.mixamoBoneName { m[b] = j } }
+            return m
+        }()
         for (i, name) in model.jointNames.enumerated() {
-            indexToBone[i] = Self.bareBoneName(name)
+            let bone = Self.bareBoneName(name)
+            indexToBone[i] = bone
+            // Bind a joint to the FIRST rig index carrying its bone (Mixamo has one bone
+            // per name; the spine collapse maps several joints to one bone, so pick the
+            // primary joint per bone to avoid several joints fighting over one index).
+            if let joint = boneToJoint[bone], indexForJoint[joint] == nil {
+                indexForJoint[joint] = i
+            }
         }
         bindTransforms = model.jointTransforms
+        for (joint, index) in indexForJoint where index < bindTransforms.count {
+            mixamoBindLocalRot[joint] = bindTransforms[index].rotation
+        }
+
+        // Primary joint per bone (first in allCases order), and its parent primary.
+        var seenBone: Set<String> = []
+        var primaryByBone: [String: ARKitBodyJoint] = [:]
+        for joint in ARKitBodyJoint.allCases {
+            guard let bone = joint.mixamoBoneName, indexForJoint[joint] != nil else { continue }
+            if !seenBone.contains(bone) {
+                seenBone.insert(bone)
+                primaryJoints.append(joint)
+                primaryByBone[bone] = joint
+            }
+        }
+        for joint in primaryJoints {
+            let myBone = joint.mixamoBoneName
+            var p = joint.parent
+            while let cur = p {
+                if let curBone = cur.mixamoBoneName, curBone != myBone,
+                   let prim = primaryByBone[curBone] {
+                    parentPrimary[joint] = prim
+                    break
+                }
+                p = cur.parent
+            }
+        }
     }
 
     /// Normalizes a rig joint name to a bare Mixamo bone name. Handles hierarchical
@@ -82,20 +125,47 @@ public final class RealityKitSkeletonDriver {
         var transforms = model.jointTransforms
         guard !transforms.isEmpty else { return }
 
-        // Delta path reads current rotation from the RAW frame, in the identical ARKit
-        // local frame the rest was captured in — so `restRot⁻¹ * currentRot` is a pure
-        // motion delta with no frame mismatch. Applied onto the Mixamo bind pose.
-        if !restRotByBone.isEmpty {
-            for (index, bone) in indexToBone {
-                guard index < transforms.count, index < bindTransforms.count,
-                      let restRot = restRotByBone[bone],
-                      let joint = jointForBone[bone],
-                      let currentLocal = frame.localTransform(joint) else { continue }
-                let currentRot = simd_quatf(currentLocal)
-                let motion = restRot.inverse * currentRot
-                var t = bindTransforms[index]
-                t.rotation = (t.rotation * motion).normalized
-                transforms[index] = t
+        // World-space delta retarget. Motion is measured in model/world space (rotation
+        // of the bone away from its ARKit rest), which is frame-independent, then applied
+        // to the Mixamo bind world orientation. This avoids the ARKit-vs-Mixamo per-bone
+        // local-axis difference that otherwise turns "arms forward" into "arms sideways".
+        if hasRestPose {
+            var arkitRestWorld: [ARKitBodyJoint: simd_quatf] = [:]
+            var arkitCurWorld: [ARKitBodyJoint: simd_quatf] = [:]
+            var mixamoBindWorld: [ARKitBodyJoint: simd_quatf] = [:]
+            var mixamoTargetWorld: [ARKitBodyJoint: simd_quatf] = [:]
+
+            for joint in primaryJoints {
+                let restLocal = arkitRestLocalRot[joint] ?? .id
+                let curLocal = frame.localTransform(joint).map { simd_quatf($0) } ?? restLocal
+                let bindLocal = mixamoBindLocalRot[joint] ?? .id
+
+                let parent = parentPrimary[joint]
+                let parentRestW = parent.flatMap { arkitRestWorld[$0] } ?? .id
+                let parentCurW = parent.flatMap { arkitCurWorld[$0] } ?? .id
+                let parentBindW = parent.flatMap { mixamoBindWorld[$0] } ?? .id
+                let parentTargetW = parent.flatMap { mixamoTargetWorld[$0] } ?? .id
+
+                let restW = (parentRestW * restLocal).normalized
+                let curW = (parentCurW * curLocal).normalized
+                let bindW = (parentBindW * bindLocal).normalized
+                arkitRestWorld[joint] = restW
+                arkitCurWorld[joint] = curW
+                mixamoBindWorld[joint] = bindW
+
+                // Motion the bone underwent, in world space, applied onto Mixamo bind world.
+                let motionWorld = (curW * restW.inverse).normalized
+                let targetW = (motionWorld * bindW).normalized
+                mixamoTargetWorld[joint] = targetW
+
+                // Back to a parent-relative local rotation for the rig.
+                let newLocal = (parentTargetW.inverse * targetW).normalized
+                if let index = indexForJoint[joint], index < transforms.count,
+                   index < bindTransforms.count {
+                    var t = bindTransforms[index]
+                    t.rotation = newLocal
+                    transforms[index] = t
+                }
             }
             model.jointTransforms = transforms
             return
