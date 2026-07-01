@@ -39,6 +39,17 @@ public final class RealityKitSkeletonDriver {
     /// Each primary joint's parent primary (nearest ancestor with a different bone).
     private var parentPrimary: [ARKitBodyJoint: ARKitBodyJoint] = [:]
 
+    /// Retargeting strategy.
+    public enum Mode: String, CaseIterable, Sendable {
+        /// Aim limb bones along recorded joint-position directions (no roll). Robust but
+        /// cannot reproduce forearm/wrist twist.
+        case directionMatch
+        /// Transfer full world orientation relative to the reference pose (aim + roll).
+        /// Needs the reference to match the pose the actor actually started in.
+        case rotationTransfer
+    }
+    public var mode: Mode = .rotationTransfer
+
     public init(model: ModelEntity, retargeter: MixamoRetargeter = MixamoRetargeter()) {
         self.model = model
         self.retargeter = retargeter
@@ -191,23 +202,28 @@ public final class RealityKitSkeletonDriver {
                 arkitCurMat[joint] = pCurMat * curMatLocal
                 bindMat[joint] = pBindMat * bindLocalMat
 
-                targetW[joint] = ((cW * rW.inverse) * bW).normalized  // world-global default
+                // rotationTransfer: full orientation relative to the reference pose,
+                // aligned per-bone (bindW * restW⁻¹ * curW). With the reference set to the
+                // clip's first frame this reproduces aim AND roll for both arms.
+                // Default for non-limb joints in either mode.
+                targetW[joint] = (bW * rW.inverse * cW).normalized
             }
 
-            // Pass B: override arm/leg chains with direction matching.
-            func pos(_ m: simd_float4x4) -> SIMD3<Float> { SIMD3(m.columns.3.x, m.columns.3.y, m.columns.3.z) }
-            for (joint, child) in Self.directionChild {
-                guard let jMat = arkitCurMat[joint], let cMat = arkitCurMat[child],
-                      let jb = bindMat[joint], let cb = bindMat[child],
-                      let bW = bindW[joint] else { continue }
-                let targetDir = simd_normalize(pos(cMat) - pos(jMat))
-                let bindDir = simd_normalize(pos(cb) - pos(jb))
-                guard targetDir.x.isFinite, bindDir.x.isFinite else { continue }
-                let swing = Self.rotation(from: bindDir, to: targetDir)
-                targetW[joint] = (swing * bW).normalized
-                // End bone (e.g. hand) inherits its parent's swing so it stays natural.
-                if let end = Self.directionEnd[joint], let endBind = bindW[end] {
-                    targetW[end] = (swing * endBind).normalized
+            // Pass B: in directionMatch mode, override limb chains with position-based aim.
+            if mode == .directionMatch {
+                func pos(_ m: simd_float4x4) -> SIMD3<Float> { SIMD3(m.columns.3.x, m.columns.3.y, m.columns.3.z) }
+                for (joint, child) in Self.directionChild {
+                    guard let jMat = arkitCurMat[joint], let cMat = arkitCurMat[child],
+                          let jb = bindMat[joint], let cb = bindMat[child],
+                          let bW = bindW[joint] else { continue }
+                    let targetDir = simd_normalize(pos(cMat) - pos(jMat))
+                    let bindDir = simd_normalize(pos(cb) - pos(jb))
+                    guard targetDir.x.isFinite, bindDir.x.isFinite else { continue }
+                    let swing = Self.rotation(from: bindDir, to: targetDir)
+                    targetW[joint] = (swing * bW).normalized
+                    if let end = Self.directionEnd[joint], let endBind = bindW[end] {
+                        targetW[end] = (swing * endBind).normalized
+                    }
                 }
             }
 
