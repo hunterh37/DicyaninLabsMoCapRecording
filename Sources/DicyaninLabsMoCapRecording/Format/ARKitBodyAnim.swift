@@ -131,6 +131,15 @@ public extension ARKitBodyAnim {
         try decode(try Data(contentsOf: url))
     }
 
+    /// The rest pose to use for delta retargeting, with a backward-compatible fallback:
+    /// clips recorded before rest capture (no `restPose`) assume the first frame is the
+    /// neutral pose. The actor is typically near-still at clip start, so relative motion
+    /// still plays correctly even if absolute limb angles aren't anatomically exact.
+    var effectiveRestPose: [String: AnimTransform]? {
+        if let restPose { return restPose }
+        return frames.first?.localJoints
+    }
+
     /// Nearest-frame sample at a given playback time.
     func frame(at time: TimeInterval) -> ARKitBodyFrame? {
         guard !frames.isEmpty else { return nil }
