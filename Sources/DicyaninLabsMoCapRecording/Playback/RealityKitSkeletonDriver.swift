@@ -253,7 +253,16 @@ public final class RealityKitSkeletonDriver {
                 guard let index = indexForJoint[joint], index < transforms.count,
                       index < bindTransforms.count, let tW = targetW[joint] else { continue }
                 var t = bindTransforms[index]
-                if !Self.handJoints.contains(joint) {
+                if joint == .leftHand {
+                    // Left forearm frame (world-space order) matches the bind hand, so the
+                    // natural bind bend already points the hand forward. Leave it at bind.
+                } else if joint == .rightHand {
+                    // Right forearm uses the bone-local order, whose roll disagrees with the
+                    // bind hand and swings it sideways. With no ARKit wrist data to honor,
+                    // extend the hand straight along the forearm (identity local) so it
+                    // points forward regardless of the forearm's roll.
+                    t.rotation = .id
+                } else {
                     let parentTW = parentPrimary[joint].flatMap { targetW[$0] } ?? .id
                     t.rotation = (parentTW.inverse * tW).normalized
                 }
