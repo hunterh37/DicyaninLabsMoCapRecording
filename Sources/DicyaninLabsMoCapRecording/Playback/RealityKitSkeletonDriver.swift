@@ -20,11 +20,31 @@ public final class RealityKitSkeletonDriver {
     /// because the two rigs have different bone lengths.
     public var rotationOnly: Bool = true
 
+    /// ARKit neutral (rest) local rotation per bare Mixamo bone name, when available.
+    /// When set, `apply` uses delta retargeting (`bindRot * restRot⁻¹ * currentRot`),
+    /// which respects both rigs' bind poses. Without it, falls back to absolute rotation.
+    private var restRotByBone: [String: simd_quatf] = [:]
+
     public init(model: ModelEntity, retargeter: MixamoRetargeter = MixamoRetargeter()) {
         self.model = model
         self.retargeter = retargeter
         resolveJointNames()
     }
+
+    /// Supplies the ARKit neutral pose (from `ARKitBodyAnim.restPose`) to enable delta
+    /// retargeting. Keys are ARKit joint raw names; the last joint mapping to each Mixamo
+    /// bone wins (matches the retargeter's collapse of the spine chain).
+    public func setRestPose(_ restPose: [String: AnimTransform]) {
+        var map: [String: simd_quatf] = [:]
+        for joint in ARKitBodyJoint.allCases {
+            guard let bone = joint.mixamoBoneName,
+                  let rest = restPose[joint.rawValue] else { continue }
+            map[bone] = simd_quatf(rest.matrix)
+        }
+        restRotByBone = map
+    }
+
+    public var hasRestPose: Bool { !restRotByBone.isEmpty }
 
     private func resolveJointNames() {
         guard let model else { return }
@@ -56,9 +76,17 @@ public final class RealityKitSkeletonDriver {
         guard !transforms.isEmpty else { return }
         for (index, bone) in indexToBone {
             guard index < transforms.count, let m = bones[bone] else { continue }
-            if rotationOnly, index < bindTransforms.count {
+            let hasBind = index < bindTransforms.count
+            if let restRot = restRotByBone[bone], hasBind {
+                // Delta retarget: motion relative to ARKit rest, applied to Mixamo bind.
+                let currentRot = simd_quatf(m)
+                let motion = restRot.inverse * currentRot
                 var t = bindTransforms[index]
-                t.rotation = simd_quatf(m)          // drive rotation only
+                t.rotation = (t.rotation * motion).normalized
+                transforms[index] = t
+            } else if rotationOnly, hasBind {
+                var t = bindTransforms[index]
+                t.rotation = simd_quatf(m)          // absolute rotation fallback
                 transforms[index] = t
             } else {
                 transforms[index] = Transform(matrix: m)

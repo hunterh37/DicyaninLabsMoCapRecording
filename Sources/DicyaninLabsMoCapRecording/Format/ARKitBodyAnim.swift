@@ -64,6 +64,12 @@ public struct ARKitBodyAnim: Codable, Sendable {
     public var frameRate: Double
     /// Skeleton this recording targets, in joint raw-name order.
     public var jointOrder: [String]
+    /// ARKit neutral (rest / T-pose) local joint transforms, keyed by joint raw name.
+    /// Required for correct delta retargeting onto a differently-bound rig (e.g. Mixamo):
+    /// the motion applied to the target rig is `current * rest⁻¹`, so a joint that isn't
+    /// moving relative to the ARKit rest leaves the target rig at its own bind pose.
+    /// Optional for backward compatibility with clips recorded before this was captured.
+    public var restPose: [String: AnimTransform]?
     public var frames: [ARKitBodyFrame]
 
     public var duration: TimeInterval { frames.last?.time ?? 0 }
@@ -73,6 +79,7 @@ public struct ARKitBodyAnim: Codable, Sendable {
         createdAt: Date = Date(),
         frameRate: Double = 60,
         jointOrder: [String] = ARKitBodyJoint.allCases.map(\.rawValue),
+        restPose: [String: AnimTransform]? = nil,
         frames: [ARKitBodyFrame] = []
     ) {
         self.magic = Self.magic
@@ -81,6 +88,7 @@ public struct ARKitBodyAnim: Codable, Sendable {
         self.createdAt = createdAt
         self.frameRate = frameRate
         self.jointOrder = jointOrder
+        self.restPose = restPose
         self.frames = frames
     }
 }

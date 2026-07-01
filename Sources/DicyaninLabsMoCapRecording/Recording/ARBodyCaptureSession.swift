@@ -88,7 +88,18 @@ public final class ARBodyCaptureSession: NSObject, ARSessionDelegate {
             onLiveBody?(LiveBodySnapshot(worldJoints: world, camera: camera))
         }
 
-        Task { @MainActor in
+        // Capture the ARKit neutral (rest) pose once, so playback can delta-retarget.
+        var restLocals: [String: simd_float4x4] = [:]
+        let neutral = def.neutralBodySkeleton3D
+        let neutralLocals = neutral?.jointLocalTransforms
+        for (index, name) in def.jointNames.enumerated() {
+            guard ARKitBodyJoint(rawValue: name) != nil,
+                  let neutralLocals, index < neutralLocals.count else { continue }
+            restLocals[name] = neutralLocals[index]
+        }
+
+        Task { @MainActor [restLocals] in
+            recorder.setRestPose(restLocals)
             recorder.append(
                 rootTransform: root,
                 localJoints: locals,

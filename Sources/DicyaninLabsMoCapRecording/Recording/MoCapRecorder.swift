@@ -16,9 +16,17 @@ public final class MoCapRecorder: ObservableObject {
     private var startTime: TimeInterval = 0
     private var frames: [ARKitBodyFrame] = []
     private var name: String = "Untitled"
+    private var restPose: [String: AnimTransform]?
 
     public init(frameRate: Double = 60) {
         self.frameRate = frameRate
+    }
+
+    /// Records the ARKit neutral (rest) pose once. Safe to call every frame; only the
+    /// first non-empty pose is kept. Needed for correct delta retargeting at playback.
+    public func setRestPose(_ localJoints: [String: simd_float4x4]) {
+        guard restPose == nil, !localJoints.isEmpty else { return }
+        restPose = localJoints.mapValues(AnimTransform.init)
     }
 
     public func start(name: String) {
@@ -55,6 +63,7 @@ public final class MoCapRecorder: ObservableObject {
         return ARKitBodyAnim(
             name: name,
             frameRate: frameRate,
+            restPose: restPose,
             frames: frames
         )
     }
