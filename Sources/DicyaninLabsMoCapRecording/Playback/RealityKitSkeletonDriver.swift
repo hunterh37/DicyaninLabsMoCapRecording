@@ -106,6 +106,34 @@ public final class RealityKitSkeletonDriver {
         }
     }
 
+    /// Bones aimed by direction matching, mapped to the child joint whose position
+    /// defines the bone's forward direction.
+    static let directionChild: [ARKitBodyJoint: ARKitBodyJoint] = [
+        .leftShoulder: .leftArm, .leftArm: .leftForearm, .leftForearm: .leftHand,
+        .rightShoulder: .rightArm, .rightArm: .rightForearm, .rightForearm: .rightHand,
+        .leftUpLeg: .leftLeg, .leftLeg: .leftFoot,
+        .rightUpLeg: .rightLeg, .rightLeg: .rightFoot,
+    ]
+    /// End bones (no child) that should inherit their parent bone's swing.
+    static let directionEnd: [ARKitBodyJoint: ARKitBodyJoint] = [
+        .leftForearm: .leftHand, .rightForearm: .rightHand,
+        .leftLeg: .leftFoot, .rightLeg: .rightFoot,
+    ]
+
+    /// Shortest-arc rotation taking unit vector `a` onto unit vector `b`.
+    static func rotation(from a: SIMD3<Float>, to b: SIMD3<Float>) -> simd_quatf {
+        let d = simd_dot(a, b)
+        if d >= 0.99999 { return .id }
+        if d <= -0.99999 {
+            // 180°: pick any axis perpendicular to a.
+            var axis = simd_cross(SIMD3<Float>(1, 0, 0), a)
+            if simd_length(axis) < 1e-4 { axis = simd_cross(SIMD3<Float>(0, 1, 0), a) }
+            return simd_quatf(angle: .pi, axis: simd_normalize(axis))
+        }
+        let axis = simd_normalize(simd_cross(a, b))
+        return simd_quatf(angle: acos(min(1, max(-1, d))), axis: axis)
+    }
+
     /// Normalizes a rig joint name to a bare Mixamo bone name. Handles hierarchical
     /// paths ("Root/Hips/Spine/...") and both Mixamo prefix styles emitted by
     /// different exporters: "mixamorig:LeftArm" and "mixamorig_LeftArm".
@@ -125,47 +153,72 @@ public final class RealityKitSkeletonDriver {
         var transforms = model.jointTransforms
         guard !transforms.isEmpty else { return }
 
-        // World-space delta retarget. Motion is measured in model/world space (rotation
-        // of the bone away from its ARKit rest), which is frame-independent, then applied
-        // to the Mixamo bind world orientation. This avoids the ARKit-vs-Mixamo per-bone
-        // local-axis difference that otherwise turns "arms forward" into "arms sideways".
+        // Retarget. Limb bones (arms/legs) use DIRECTION MATCHING: aim each Mixamo bone
+        // along the world direction its ARKit counterpart points (derived from joint
+        // POSITIONS, which are unambiguous and mirror-safe), instead of composing
+        // rotations across two rigs whose per-bone roll axes disagree. Rotation-transfer
+        // was fixing one arm and breaking the other precisely because those axes differ
+        // between left and right. Torso/neck/head keep the world-global rotation delta,
+        // which looked correct there.
         if hasRestPose {
-            var arkitRestWorld: [ARKitBodyJoint: simd_quatf] = [:]
-            var arkitCurWorld: [ARKitBodyJoint: simd_quatf] = [:]
-            var mixamoBindWorld: [ARKitBodyJoint: simd_quatf] = [:]
-            var mixamoTargetWorld: [ARKitBodyJoint: simd_quatf] = [:]
+            var arkitRestW: [ARKitBodyJoint: simd_quatf] = [:]
+            var arkitCurW: [ARKitBodyJoint: simd_quatf] = [:]
+            var bindW: [ARKitBodyJoint: simd_quatf] = [:]
+            var targetW: [ARKitBodyJoint: simd_quatf] = [:]
+            var arkitCurMat: [ARKitBodyJoint: simd_float4x4] = [:]
+            var bindMat: [ARKitBodyJoint: simd_float4x4] = [:]
 
+            // Pass A: accumulate world rotations + world matrices (for positions), and set
+            // a default world-global target for every joint.
             for joint in primaryJoints {
-                let restLocal = arkitRestLocalRot[joint] ?? .id
-                let curLocal = frame.localTransform(joint).map { simd_quatf($0) } ?? restLocal
-                let bindLocal = mixamoBindLocalRot[joint] ?? .id
-
                 let parent = parentPrimary[joint]
-                let parentRestW = parent.flatMap { arkitRestWorld[$0] } ?? .id
-                let parentCurW = parent.flatMap { arkitCurWorld[$0] } ?? .id
-                let parentBindW = parent.flatMap { mixamoBindWorld[$0] } ?? .id
-                let parentTargetW = parent.flatMap { mixamoTargetWorld[$0] } ?? .id
+                let restLocal = arkitRestLocalRot[joint] ?? .id
+                let curMatLocal = frame.localTransform(joint) ?? simd_float4x4(restLocal)
+                let bindLocalMat = (indexForJoint[joint].flatMap { $0 < bindTransforms.count ? bindTransforms[$0].matrix : nil }) ?? matrix_identity_float4x4
 
-                let restW = (parentRestW * restLocal).normalized
-                let curW = (parentCurW * curLocal).normalized
-                let bindW = (parentBindW * bindLocal).normalized
-                arkitRestWorld[joint] = restW
-                arkitCurWorld[joint] = curW
-                mixamoBindWorld[joint] = bindW
+                let pRestW = parent.flatMap { arkitRestW[$0] } ?? .id
+                let pCurW = parent.flatMap { arkitCurW[$0] } ?? .id
+                let pBindW = parent.flatMap { bindW[$0] } ?? .id
+                let pCurMat = parent.flatMap { arkitCurMat[$0] } ?? matrix_identity_float4x4
+                let pBindMat = parent.flatMap { bindMat[$0] } ?? matrix_identity_float4x4
 
-                // World-global motion (restores the left arm being correct).
-                let motionWorld = (curW * restW.inverse).normalized
-                let targetW = (motionWorld * bindW).normalized
-                mixamoTargetWorld[joint] = targetW
+                let rW = (pRestW * restLocal).normalized
+                let cW = (pCurW * simd_quatf(curMatLocal)).normalized
+                let bW = (pBindW * (mixamoBindLocalRot[joint] ?? .id)).normalized
+                arkitRestW[joint] = rW
+                arkitCurW[joint] = cW
+                bindW[joint] = bW
+                arkitCurMat[joint] = pCurMat * curMatLocal
+                bindMat[joint] = pBindMat * bindLocalMat
 
-                // Back to a parent-relative local rotation for the rig.
-                let newLocal = (parentTargetW.inverse * targetW).normalized
-                if let index = indexForJoint[joint], index < transforms.count,
-                   index < bindTransforms.count {
-                    var t = bindTransforms[index]
-                    t.rotation = newLocal
-                    transforms[index] = t
+                targetW[joint] = ((cW * rW.inverse) * bW).normalized  // world-global default
+            }
+
+            // Pass B: override arm/leg chains with direction matching.
+            func pos(_ m: simd_float4x4) -> SIMD3<Float> { SIMD3(m.columns.3.x, m.columns.3.y, m.columns.3.z) }
+            for (joint, child) in Self.directionChild {
+                guard let jMat = arkitCurMat[joint], let cMat = arkitCurMat[child],
+                      let jb = bindMat[joint], let cb = bindMat[child],
+                      let bW = bindW[joint] else { continue }
+                let targetDir = simd_normalize(pos(cMat) - pos(jMat))
+                let bindDir = simd_normalize(pos(cb) - pos(jb))
+                guard targetDir.x.isFinite, bindDir.x.isFinite else { continue }
+                let swing = Self.rotation(from: bindDir, to: targetDir)
+                targetW[joint] = (swing * bW).normalized
+                // End bone (e.g. hand) inherits its parent's swing so it stays natural.
+                if let end = Self.directionEnd[joint], let endBind = bindW[end] {
+                    targetW[end] = (swing * endBind).normalized
                 }
+            }
+
+            // Pass C: write parent-relative local rotations, parent-first.
+            for joint in primaryJoints {
+                guard let index = indexForJoint[joint], index < transforms.count,
+                      index < bindTransforms.count, let tW = targetW[joint] else { continue }
+                let parentTW = parentPrimary[joint].flatMap { targetW[$0] } ?? .id
+                var t = bindTransforms[index]
+                t.rotation = (parentTW.inverse * tW).normalized
+                transforms[index] = t
             }
             model.jointTransforms = transforms
             return
