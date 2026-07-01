@@ -31,17 +31,25 @@ public final class RealityKitSkeletonDriver {
         resolveJointNames()
     }
 
+    /// Which ARKit joint drives each Mixamo bone (last mapping wins, matching the
+    /// retargeter's spine-chain collapse). Used to read the current raw rotation from
+    /// the frame in the SAME ARKit local frame as the rest, so the delta is consistent.
+    private var jointForBone: [String: ARKitBodyJoint] = [:]
+
     /// Supplies the ARKit neutral pose (from `ARKitBodyAnim.restPose`) to enable delta
     /// retargeting. Keys are ARKit joint raw names; the last joint mapping to each Mixamo
     /// bone wins (matches the retargeter's collapse of the spine chain).
     public func setRestPose(_ restPose: [String: AnimTransform]) {
         var map: [String: simd_quatf] = [:]
+        var joints: [String: ARKitBodyJoint] = [:]
         for joint in ARKitBodyJoint.allCases {
             guard let bone = joint.mixamoBoneName,
                   let rest = restPose[joint.rawValue] else { continue }
             map[bone] = simd_quatf(rest.matrix)
+            joints[bone] = joint
         }
         restRotByBone = map
+        jointForBone = joints
     }
 
     public var hasRestPose: Bool { !restRotByBone.isEmpty }
@@ -71,22 +79,35 @@ public final class RealityKitSkeletonDriver {
     /// Apply a recorded frame to the model's joints.
     public func apply(_ frame: ARKitBodyFrame) {
         guard let model else { return }
-        let bones = retargeter.retarget(frame)
         var transforms = model.jointTransforms
         guard !transforms.isEmpty else { return }
-        for (index, bone) in indexToBone {
-            guard index < transforms.count, let m = bones[bone] else { continue }
-            let hasBind = index < bindTransforms.count
-            if let restRot = restRotByBone[bone], hasBind {
-                // Delta retarget: motion relative to ARKit rest, applied to Mixamo bind.
-                let currentRot = simd_quatf(m)
+
+        // Delta path reads current rotation from the RAW frame, in the identical ARKit
+        // local frame the rest was captured in — so `restRot⁻¹ * currentRot` is a pure
+        // motion delta with no frame mismatch. Applied onto the Mixamo bind pose.
+        if !restRotByBone.isEmpty {
+            for (index, bone) in indexToBone {
+                guard index < transforms.count, index < bindTransforms.count,
+                      let restRot = restRotByBone[bone],
+                      let joint = jointForBone[bone],
+                      let currentLocal = frame.localTransform(joint) else { continue }
+                let currentRot = simd_quatf(currentLocal)
                 let motion = restRot.inverse * currentRot
                 var t = bindTransforms[index]
                 t.rotation = (t.rotation * motion).normalized
                 transforms[index] = t
-            } else if rotationOnly, hasBind {
+            }
+            model.jointTransforms = transforms
+            return
+        }
+
+        // No rest pose: absolute fallback via the retargeter.
+        let bones = retargeter.retarget(frame)
+        for (index, bone) in indexToBone {
+            guard index < transforms.count, let m = bones[bone] else { continue }
+            if rotationOnly, index < bindTransforms.count {
                 var t = bindTransforms[index]
-                t.rotation = simd_quatf(m)          // absolute rotation fallback
+                t.rotation = simd_quatf(m)
                 transforms[index] = t
             } else {
                 transforms[index] = Transform(matrix: m)
