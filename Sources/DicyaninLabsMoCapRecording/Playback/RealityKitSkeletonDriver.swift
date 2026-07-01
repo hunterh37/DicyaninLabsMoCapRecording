@@ -23,9 +23,21 @@ public final class RealityKitSkeletonDriver {
         guard let model else { return }
         // ModelEntity exposes joint names via `jointNames`.
         for (i, name) in model.jointNames.enumerated() {
-            let bare = name.components(separatedBy: ":").last ?? name
-            indexToBone[i] = bare
+            indexToBone[i] = Self.bareBoneName(name)
         }
+    }
+
+    /// Normalizes a rig joint name to a bare Mixamo bone name. Handles hierarchical
+    /// paths ("Root/Hips/Spine/...") and both Mixamo prefix styles emitted by
+    /// different exporters: "mixamorig:LeftArm" and "mixamorig_LeftArm".
+    public static func bareBoneName(_ name: String) -> String {
+        var n = name
+        if let slash = n.lastIndex(of: "/") { n = String(n[n.index(after: slash)...]) }
+        if let colon = n.lastIndex(of: ":") { n = String(n[n.index(after: colon)...]) }
+        for prefix in ["mixamorig_", "mixamorig:"] where n.hasPrefix(prefix) {
+            n = String(n.dropFirst(prefix.count))
+        }
+        return n
     }
 
     /// Apply a recorded frame to the model's joints.
