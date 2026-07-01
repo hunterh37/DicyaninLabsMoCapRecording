@@ -121,7 +121,7 @@ public final class RealityKitSkeletonDriver {
     ]
 
     /// Shortest-arc rotation taking unit vector `a` onto unit vector `b`.
-    static func rotation(from a: SIMD3<Float>, to b: SIMD3<Float>) -> simd_quatf {
+    public static func rotation(from a: SIMD3<Float>, to b: SIMD3<Float>) -> simd_quatf {
         let d = simd_dot(a, b)
         if d >= 0.99999 { return .id }
         if d <= -0.99999 {
