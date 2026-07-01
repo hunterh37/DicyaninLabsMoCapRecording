@@ -125,6 +125,12 @@ public final class RealityKitSkeletonDriver {
         .leftUpLeg: .leftLeg, .leftLeg: .leftFoot,
         .rightUpLeg: .rightLeg, .rightLeg: .rightFoot,
     ]
+    /// Right arm chain. Mixamo mirrors this side's local bone axes, so it needs the
+    /// bone-local composition order while the left/torso use the world-space order.
+    static let rightArmChain: Set<ARKitBodyJoint> = [
+        .rightShoulder, .rightArm, .rightForearm, .rightHand,
+    ]
+
     /// End bones (no child) that should inherit their parent bone's swing.
     static let directionEnd: [ARKitBodyJoint: ARKitBodyJoint] = [
         .leftForearm: .leftHand, .rightForearm: .rightHand,
@@ -202,13 +208,18 @@ public final class RealityKitSkeletonDriver {
                 arkitCurMat[joint] = pCurMat * curMatLocal
                 bindMat[joint] = pBindMat * bindLocalMat
 
-                // rotationTransfer: apply the actor's WORLD motion delta (curW * restW⁻¹)
-                // to the Mixamo bind orientation. World-space (left) composition is axis
-                // agnostic, so it is symmetric across the mirrored arms, unlike the
-                // per-bone-local form bindW * restW⁻¹ * curW which reinterprets an ARKit
-                // local-frame delta in the Mixamo frame and so flips one arm. No-op at the
-                // reference frame (curW == restW leaves the joint at its own bind).
-                targetW[joint] = (cW * rW.inverse * bW).normalized
+                // rotationTransfer. The two rigs disagree on handedness for the mirrored
+                // (right) arm: Mixamo bakes a reflected local basis there, which a proper
+                // quaternion cannot represent, so the two composition orders land on
+                // opposite arms. The LEFT arm (and torso/legs) is correct under the
+                // world-space delta curW * restW⁻¹ * bindW; the RIGHT arm needs the
+                // bone-local order bindW * restW⁻¹ * curW. Both are no-ops at the reference
+                // frame. Splitting per-side keeps the working left arm untouched.
+                if Self.rightArmChain.contains(joint) {
+                    targetW[joint] = (bW * rW.inverse * cW).normalized
+                } else {
+                    targetW[joint] = (cW * rW.inverse * bW).normalized
+                }
             }
 
             // Pass B: in directionMatch mode, override limb chains with position-based aim.
