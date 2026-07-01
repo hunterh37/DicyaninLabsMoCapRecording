@@ -131,22 +131,6 @@ public final class RealityKitSkeletonDriver {
         .leftLeg: .leftFoot, .rightLeg: .rightFoot,
     ]
 
-    /// The twist component of `q` about unit `axis` (swing-twist decomposition). Returns
-    /// the rotation of `q` that acts purely around `axis`; the residual swing is dropped.
-    /// Used to keep position-based aim (swing) while borrowing only the roll (twist) from
-    /// the world-orientation transfer, so forearm/wrist twist survives without the
-    /// per-bone local-axis disagreement swinging the arm sideways.
-    public static func twist(of q: simd_quatf, about axis: SIMD3<Float>) -> simd_quatf {
-        let a = simd_normalize(axis)
-        guard a.x.isFinite else { return .id }
-        let v = q.imag
-        let proj = simd_dot(v, a) * a
-        let t = simd_quatf(ix: proj.x, iy: proj.y, iz: proj.z, r: q.real)
-        let mag = simd_length(SIMD4<Float>(t.imag.x, t.imag.y, t.imag.z, t.real))
-        if mag < 1e-6 { return .id } // q is a pure swing about an axis perpendicular to `a`.
-        return t.normalized
-    }
-
     /// Shortest-arc rotation taking unit vector `a` onto unit vector `b`.
     public static func rotation(from a: SIMD3<Float>, to b: SIMD3<Float>) -> simd_quatf {
         let d = simd_dot(a, b)
@@ -218,44 +202,30 @@ public final class RealityKitSkeletonDriver {
                 arkitCurMat[joint] = pCurMat * curMatLocal
                 bindMat[joint] = pBindMat * bindLocalMat
 
-                // World-global motion delta applied to the Mixamo bind: same WORLD rotation
-                // the actor's bone underwent, re-anchored on the nurse bind. This is axis
-                // insensitive (unlike bindW * restW⁻¹ * curW, which reinterprets an ARKit
-                // local-frame delta in the Mixamo frame and so breaks the mirrored arm).
-                // Torso/neck/head keep this directly; limbs refine it below.
+                // rotationTransfer: apply the actor's WORLD motion delta (curW * restW⁻¹)
+                // to the Mixamo bind orientation. World-space (left) composition is axis
+                // agnostic, so it is symmetric across the mirrored arms, unlike the
+                // per-bone-local form bindW * restW⁻¹ * curW which reinterprets an ARKit
+                // local-frame delta in the Mixamo frame and so flips one arm. No-op at the
+                // reference frame (curW == restW leaves the joint at its own bind).
                 targetW[joint] = (cW * rW.inverse * bW).normalized
             }
 
-            // Pass B: refine limb chains. The world-global transfer already carries the
-            // actor's true ROLL, but its aim is skewed by the ARKit/Mixamo bind mismatch
-            // (the "arms off to the side" bug). So keep the world-global orientation and
-            // only apply a corrective SWING that snaps its aim onto the direction derived
-            // from joint POSITIONS (unambiguous, mirror-safe). Roll is preserved exactly;
-            // aim is exact. Twist extraction is avoided entirely (it leaked bind swing into
-            // false roll and spun the hands). directionMatch drops roll (aim only).
-            func pos(_ m: simd_float4x4) -> SIMD3<Float> { SIMD3(m.columns.3.x, m.columns.3.y, m.columns.3.z) }
-            for (joint, child) in Self.directionChild {
-                guard let jMat = arkitCurMat[joint], let cMat = arkitCurMat[child],
-                      let jb = bindMat[joint], let cb = bindMat[child],
-                      let bW = bindW[joint], let rotW = targetW[joint],
-                      let cW = arkitCurW[joint], let rW = arkitRestW[joint] else { continue }
-                let targetDir = simd_normalize(pos(cMat) - pos(jMat))
-                let bindDir = simd_normalize(pos(cb) - pos(jb))
-                guard targetDir.x.isFinite, bindDir.x.isFinite else { continue }
-                if mode == .directionMatch {
+            // Pass B: in directionMatch mode, override limb chains with position-based aim.
+            if mode == .directionMatch {
+                func pos(_ m: simd_float4x4) -> SIMD3<Float> { SIMD3(m.columns.3.x, m.columns.3.y, m.columns.3.z) }
+                for (joint, child) in Self.directionChild {
+                    guard let jMat = arkitCurMat[joint], let cMat = arkitCurMat[child],
+                          let jb = bindMat[joint], let cb = bindMat[child],
+                          let bW = bindW[joint] else { continue }
+                    let targetDir = simd_normalize(pos(cMat) - pos(jMat))
+                    let bindDir = simd_normalize(pos(cb) - pos(jb))
+                    guard targetDir.x.isFinite, bindDir.x.isFinite else { continue }
                     let swing = Self.rotation(from: bindDir, to: targetDir)
                     targetW[joint] = (swing * bW).normalized
                     if let end = Self.directionEnd[joint], let endBind = bindW[end] {
                         targetW[end] = (swing * endBind).normalized
                     }
-                } else {
-                    // Direction the world-global orientation currently aims the bone: the
-                    // bind bone axis carried by the ARKit world motion. Correct it onto the
-                    // position-derived direction with a pure swing, leaving roll intact.
-                    let aimedDir = simd_normalize((cW * rW.inverse).act(bindDir))
-                    guard aimedDir.x.isFinite else { continue }
-                    let correction = Self.rotation(from: aimedDir, to: targetDir)
-                    targetW[joint] = (correction * rotW).normalized
                 }
             }
 
@@ -298,60 +268,44 @@ public final class RealityKitSkeletonDriver {
     /// pipeline for a given frame, so a divergence between the two sides is visible.
     public func debugArmChains(for frame: ARKitBodyFrame? = nil) -> String {
         guard model != nil else { return "no model" }
-        // Rebuild the world accumulation exactly as `apply` does, including the swing-twist
-        // limb refinement, so the printed target orientations match what gets written.
+        // Rebuild the world accumulation exactly as `apply` does.
         var restW: [ARKitBodyJoint: simd_quatf] = [:]
         var curW: [ARKitBodyJoint: simd_quatf] = [:]
         var bindW: [ARKitBodyJoint: simd_quatf] = [:]
         var targetW: [ARKitBodyJoint: simd_quatf] = [:]
-        var curMat: [ARKitBodyJoint: simd_float4x4] = [:]
-        var bindMat: [ARKitBodyJoint: simd_float4x4] = [:]
         for joint in primaryJoints {
             let restLocal = arkitRestLocalRot[joint] ?? .id
-            let curMatLocal = frame?.localTransform(joint) ?? simd_float4x4(restLocal)
-            let bindLocalMat = (indexForJoint[joint].flatMap { $0 < bindTransforms.count ? bindTransforms[$0].matrix : nil }) ?? matrix_identity_float4x4
+            let curLocal = frame?.localTransform(joint).map { simd_quatf($0) } ?? restLocal
             let bindLocal = mixamoBindLocalRot[joint] ?? .id
             let p = parentPrimary[joint]
             let prW = p.flatMap { restW[$0] } ?? .id
             let pcW = p.flatMap { curW[$0] } ?? .id
             let pbW = p.flatMap { bindW[$0] } ?? .id
-            let pcMat = p.flatMap { curMat[$0] } ?? matrix_identity_float4x4
-            let pbMat = p.flatMap { bindMat[$0] } ?? matrix_identity_float4x4
+            let ptW = p.flatMap { targetW[$0] } ?? .id
             let rW = (prW * restLocal).normalized
-            let cW = (pcW * simd_quatf(curMatLocal)).normalized
+            let cW = (pcW * curLocal).normalized
             let bW = (pbW * bindLocal).normalized
             restW[joint] = rW; curW[joint] = cW; bindW[joint] = bW
-            curMat[joint] = pcMat * curMatLocal
-            bindMat[joint] = pbMat * bindLocalMat
-            targetW[joint] = (cW * rW.inverse * bW).normalized
-        }
-        func pos(_ m: simd_float4x4) -> SIMD3<Float> { SIMD3(m.columns.3.x, m.columns.3.y, m.columns.3.z) }
-        var corrDeg: [ARKitBodyJoint: Float] = [:]
-        for (joint, child) in Self.directionChild {
-            guard let jMat = curMat[joint], let cMat = curMat[child],
-                  let jb = bindMat[joint], let cb = bindMat[child],
-                  let rotW = targetW[joint], let cW = curW[joint], let rW = restW[joint] else { continue }
-            let targetDir = simd_normalize(pos(cMat) - pos(jMat))
-            let bindDir = simd_normalize(pos(cb) - pos(jb))
-            guard targetDir.x.isFinite, bindDir.x.isFinite else { continue }
-            let aimedDir = simd_normalize((cW * rW.inverse).act(bindDir))
-            guard aimedDir.x.isFinite else { continue }
-            let correction = Self.rotation(from: aimedDir, to: targetDir)
-            corrDeg[joint] = correction.angle * 180 / .pi
-            targetW[joint] = (correction * rotW).normalized
+            let motion = (cW * rW.inverse).normalized
+            let tW = (motion * bW).normalized
+            targetW[joint] = tW
+            _ = ptW
         }
         let pairs: [(String, [ARKitBodyJoint])] = [
             ("LEFT ", [.leftShoulder, .leftArm, .leftForearm, .leftHand]),
             ("RIGHT", [.rightShoulder, .rightArm, .rightForearm, .rightHand]),
         ]
-        var lines = ["=== Arm Chain World Pipeline (mode: \(mode.rawValue)) ==="]
+        var lines = ["=== Arm Chain World Pipeline ==="]
         for (label, joints) in pairs {
             for joint in joints {
+                let rW = restW[joint] ?? .id
+                let cW = curW[joint] ?? .id
                 let bW = bindW[joint] ?? .id
-                let gW = curW[joint].flatMap { c in restW[joint].map { r in (c * r.inverse * bW).normalized } } ?? .id
-                let tW = targetW[joint] ?? .id
-                let corr = corrDeg[joint].map { String(format: "%.0f°", $0) } ?? "n/a"
-                lines.append("\(label) \(joint.mixamoBoneName ?? "?"): bindW \(Self.q(bW)) worldGlobal \(Self.q(gW)) reaim \(corr) targetW \(Self.q(tW))")
+                // Per-bone alignment offset: how the nurse bind orientation relates to the
+                // ARKit rest orientation in world. If left ≈ identity but right ≠, that's
+                // the asymmetry driving the one-sided break.
+                let align = (bW * rW.inverse).normalized
+                lines.append("\(label) \(joint.mixamoBoneName ?? "?"): restW \(Self.q(rW)) curW \(Self.q(cW)) bindW \(Self.q(bW)) align \(Self.q(align))")
             }
         }
         return lines.joined(separator: "\n")
