@@ -234,24 +234,29 @@ public final class RealityKitSkeletonDriver {
             for (joint, child) in Self.directionChild {
                 guard let jMat = arkitCurMat[joint], let cMat = arkitCurMat[child],
                       let jb = bindMat[joint], let cb = bindMat[child],
-                      let bW = bindW[joint], let rotW = targetW[joint] else { continue }
+                      let bW = bindW[joint] else { continue }
                 let targetDir = simd_normalize(pos(cMat) - pos(jMat))
                 let bindDir = simd_normalize(pos(cb) - pos(jb))
                 guard targetDir.x.isFinite, bindDir.x.isFinite else { continue }
                 let swing = Self.rotation(from: bindDir, to: targetDir)
                 let aim = (swing * bW).normalized
+                // Roll is the actor's OWN twist from rest to current about the bone axis
+                // (twist of the pure ARKit world motion cW * restW⁻¹, which is identity at
+                // rest). Decomposing R_rot re-anchored on bind instead folds in the constant
+                // bind-axis roll mismatch, which spun the hands. This uses only the moving
+                // part, so it is zero when the actor is not twisting.
                 if mode == .directionMatch {
                     targetW[joint] = aim
-                } else {
-                    let roll = Self.twist(of: (rotW * aim.inverse).normalized, about: targetDir)
+                } else if let cW = arkitCurW[joint], let rW = arkitRestW[joint] {
+                    let roll = Self.twist(of: (cW * rW.inverse).normalized, about: targetDir)
                     targetW[joint] = (roll * aim).normalized
                 }
                 if let end = Self.directionEnd[joint], let endBind = bindW[end] {
                     let endAim = (swing * endBind).normalized
                     if mode == .directionMatch {
                         targetW[end] = endAim
-                    } else if let endRotW = targetW[end] {
-                        let endRoll = Self.twist(of: (endRotW * endAim.inverse).normalized, about: targetDir)
+                    } else if let cW = arkitCurW[end], let rW = arkitRestW[end] {
+                        let endRoll = Self.twist(of: (cW * rW.inverse).normalized, about: targetDir)
                         targetW[end] = (endRoll * endAim).normalized
                     }
                 }
@@ -329,20 +334,21 @@ public final class RealityKitSkeletonDriver {
         for (joint, child) in Self.directionChild {
             guard let jMat = curMat[joint], let cMat = curMat[child],
                   let jb = bindMat[joint], let cb = bindMat[child],
-                  let bW = bindW[joint], let rotW = targetW[joint] else { continue }
+                  let bW = bindW[joint], let cW = curW[joint], let rW = restW[joint] else { continue }
             let targetDir = simd_normalize(pos(cMat) - pos(jMat))
             let bindDir = simd_normalize(pos(cb) - pos(jb))
             guard targetDir.x.isFinite, bindDir.x.isFinite else { continue }
             let swing = Self.rotation(from: bindDir, to: targetDir)
             let aim = (swing * bW).normalized
             aimW[joint] = aim
-            let roll = Self.twist(of: (rotW * aim.inverse).normalized, about: targetDir)
+            let roll = Self.twist(of: (cW * rW.inverse).normalized, about: targetDir)
             rollDeg[joint] = roll.angle * 180 / .pi
             targetW[joint] = (roll * aim).normalized
-            if let end = Self.directionEnd[joint], let endBind = bindW[end], let endRotW = targetW[end] {
+            if let end = Self.directionEnd[joint], let endBind = bindW[end],
+               let ecW = curW[end], let erW = restW[end] {
                 let endAim = (swing * endBind).normalized
                 aimW[end] = endAim
-                let endRoll = Self.twist(of: (endRotW * endAim.inverse).normalized, about: targetDir)
+                let endRoll = Self.twist(of: (ecW * erW.inverse).normalized, about: targetDir)
                 rollDeg[end] = endRoll.angle * 180 / .pi
                 targetW[end] = (endRoll * endAim).normalized
             }
