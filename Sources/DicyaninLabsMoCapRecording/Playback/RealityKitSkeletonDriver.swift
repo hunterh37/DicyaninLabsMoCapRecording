@@ -58,14 +58,29 @@ public final class RealityKitSkeletonDriver {
 
     /// Supplies the ARKit neutral (rest) pose to enable world-space delta retargeting.
     /// Keys are ARKit joint raw names. Requires the rig joints to be resolved first.
-    public func setRestPose(_ restPose: [String: AnimTransform]) {
+    ///
+    /// - `rootRotation`: the reference frame's `rootTransform` rotation (the ARKit body
+    ///   ANCHOR's world orientation — i.e. the actual torso lean — as opposed to any of
+    ///   the per-joint LOCAL transforms). See `appliesRootRotationToHips` below for why
+    ///   this matters.
+    public func setRestPose(_ restPose: [String: AnimTransform], rootRotation: simd_quatf = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)) {
         var rest: [ARKitBodyJoint: simd_quatf] = [:]
         for joint in ARKitBodyJoint.allCases {
             guard let t = restPose[joint.rawValue] else { continue }
             rest[joint] = simd_quatf(t.matrix)
         }
         arkitRestLocalRot = rest
+        restRootRotation = rootRotation
     }
+    private var restRootRotation: simd_quatf = .id
+
+    /// ARKit's `hips_joint` LOCAL transform (used above as the hips' rotation seed) is
+    /// close to a fixed reference pose and carries little of the actor's actual lean —
+    /// the real body orientation (forward lean, turning, etc.) lives in the frame's
+    /// `rootTransform` (the body ANCHOR's world transform), which this retarget never
+    /// reads otherwise. Default OFF so existing playback is unaffected until confirmed;
+    /// turn on to fold the anchor's world rotation into the hips seed.
+    public var appliesRootRotationToHips: Bool = false
 
     public var hasRestPose: Bool { !arkitRestLocalRot.isEmpty }
 
@@ -216,8 +231,12 @@ public final class RealityKitSkeletonDriver {
                 let pCurMat = parent.flatMap { arkitCurMat[$0] } ?? matrix_identity_float4x4
                 let pBindMat = parent.flatMap { bindMat[$0] } ?? matrix_identity_float4x4
 
-                let rW = (pRestW * restLocal).normalized
-                let cW = (pCurW * simd_quatf(curMatLocal)).normalized
+                var rW = (pRestW * restLocal).normalized
+                var cW = (pCurW * simd_quatf(curMatLocal)).normalized
+                if appliesRootRotationToHips && Self.torsoChain.contains(joint) {
+                    rW = (restRootRotation * rW).normalized
+                    cW = (simd_quatf(frame.rootTransform.matrix) * cW).normalized
+                }
                 let bW = (pBindW * (mixamoBindLocalRot[joint] ?? .id)).normalized
                 arkitRestW[joint] = rW
                 arkitCurW[joint] = cW
