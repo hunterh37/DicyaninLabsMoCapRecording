@@ -153,13 +153,9 @@ public final class RealityKitSkeletonDriver {
                 arkitCurWorld[joint] = curW
                 mixamoBindWorld[joint] = bindW
 
-                // Anatomical transfer: the source bone's deviation from its rest, measured
-                // in the bone's OWN frame (`restW⁻¹ * curW`, right-multiply), applied onto
-                // the Mixamo bind. This transfers joint angles and is inherently mirror-
-                // correct, unlike a world-global motion (`curW*restW⁻¹ * bind`) which only
-                // works when the two rigs' rest poses point the same way (true for the left
-                // arm, false for the right — hence the right arm was over-rotating).
-                let targetW = (bindW * restW.inverse * curW).normalized
+                // World-global motion (restores the left arm being correct).
+                let motionWorld = (curW * restW.inverse).normalized
+                let targetW = (motionWorld * bindW).normalized
                 mixamoTargetWorld[joint] = targetW
 
                 // Back to a parent-relative local rotation for the rig.
@@ -219,7 +215,8 @@ public final class RealityKitSkeletonDriver {
             let cW = (pcW * curLocal).normalized
             let bW = (pbW * bindLocal).normalized
             restW[joint] = rW; curW[joint] = cW; bindW[joint] = bW
-            let tW = (bW * rW.inverse * cW).normalized
+            let motion = (cW * rW.inverse).normalized
+            let tW = (motion * bW).normalized
             targetW[joint] = tW
             _ = ptW
         }
@@ -230,8 +227,14 @@ public final class RealityKitSkeletonDriver {
         var lines = ["=== Arm Chain World Pipeline ==="]
         for (label, joints) in pairs {
             for joint in joints {
-                let motion = (curW[joint].map { c in (c * (restW[joint] ?? .id).inverse).normalized }) ?? .id
-                lines.append("\(label) \(joint.mixamoBoneName ?? "?"): bindW \(Self.q(bindW[joint] ?? .id)) motionW \(Self.q(motion)) targetW \(Self.q(targetW[joint] ?? .id))")
+                let rW = restW[joint] ?? .id
+                let cW = curW[joint] ?? .id
+                let bW = bindW[joint] ?? .id
+                // Per-bone alignment offset: how the nurse bind orientation relates to the
+                // ARKit rest orientation in world. If left ≈ identity but right ≠, that's
+                // the asymmetry driving the one-sided break.
+                let align = (bW * rW.inverse).normalized
+                lines.append("\(label) \(joint.mixamoBoneName ?? "?"): restW \(Self.q(rW)) curW \(Self.q(cW)) bindW \(Self.q(bW)) align \(Self.q(align))")
             }
         }
         return lines.joined(separator: "\n")
