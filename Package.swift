@@ -16,7 +16,10 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "DicyaninLabsMoCapRecording"
+            name: "DicyaninLabsMoCapRecording",
+            resources: [
+                .process("Resources")
+            ]
         ),
         .testTarget(
             name: "DicyaninLabsMoCapRecordingTests",

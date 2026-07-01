@@ -151,6 +151,14 @@ public extension ARKitBodyAnim {
         try decode(try Data(contentsOf: url))
     }
 
+    /// A sample clip bundled with the package, for demos and the debug view.
+    static var sample: ARKitBodyAnim? {
+        guard let url = Bundle.module.url(forResource: "sample-breathing", withExtension: fileExtension) else {
+            return nil
+        }
+        return try? read(from: url)
+    }
+
     /// The rest pose to use for delta retargeting, with a backward-compatible fallback:
     /// clips recorded before rest capture (no `restPose`) assume the first frame is the
     /// neutral pose. The actor is typically near-still at clip start, so relative motion
