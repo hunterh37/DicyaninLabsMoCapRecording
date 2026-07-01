@@ -193,27 +193,42 @@ public final class RealityKitSkeletonDriver {
         indexToBone.sorted { $0.key < $1.key }.map(\.value)
     }
 
-    /// Side-by-side left vs right arm-chain dump to diagnose one-sided breakage.
-    /// Prints each bone's bind scale sign (reflection detector), bind local rotation,
-    /// and the ARKit rest local rotation, so a mirrored right-side bind stands out.
-    public func debugArmChains() -> String {
-        guard let model else { return "no model" }
+    /// Side-by-side left vs right arm-chain dump replicating the full world-space
+    /// pipeline for a given frame, so a divergence between the two sides is visible.
+    public func debugArmChains(for frame: ARKitBodyFrame? = nil) -> String {
+        guard model != nil else { return "no model" }
+        // Rebuild the world accumulation exactly as `apply` does.
+        var restW: [ARKitBodyJoint: simd_quatf] = [:]
+        var curW: [ARKitBodyJoint: simd_quatf] = [:]
+        var bindW: [ARKitBodyJoint: simd_quatf] = [:]
+        var targetW: [ARKitBodyJoint: simd_quatf] = [:]
+        for joint in primaryJoints {
+            let restLocal = arkitRestLocalRot[joint] ?? .id
+            let curLocal = frame?.localTransform(joint).map { simd_quatf($0) } ?? restLocal
+            let bindLocal = mixamoBindLocalRot[joint] ?? .id
+            let p = parentPrimary[joint]
+            let prW = p.flatMap { restW[$0] } ?? .id
+            let pcW = p.flatMap { curW[$0] } ?? .id
+            let pbW = p.flatMap { bindW[$0] } ?? .id
+            let ptW = p.flatMap { targetW[$0] } ?? .id
+            let rW = (prW * restLocal).normalized
+            let cW = (pcW * curLocal).normalized
+            let bW = (pbW * bindLocal).normalized
+            restW[joint] = rW; curW[joint] = cW; bindW[joint] = bW
+            let motion = (cW * rW.inverse).normalized
+            let tW = (motion * bW).normalized
+            targetW[joint] = tW
+            _ = ptW
+        }
         let pairs: [(String, [ARKitBodyJoint])] = [
             ("LEFT ", [.leftShoulder, .leftArm, .leftForearm, .leftHand]),
             ("RIGHT", [.rightShoulder, .rightArm, .rightForearm, .rightHand]),
         ]
-        var lines = ["=== Arm Chain Diagnostics ==="]
+        var lines = ["=== Arm Chain World Pipeline ==="]
         for (label, joints) in pairs {
             for joint in joints {
-                guard let index = indexForJoint[joint], index < bindTransforms.count else {
-                    lines.append("\(label) \(joint.rawValue): no rig index"); continue
-                }
-                let t = bindTransforms[index]
-                let s = t.scale
-                let detSign = (s.x * s.y * s.z) < 0 ? "MIRRORED(neg-scale)" : "ok"
-                let bindRot = Self.q(t.rotation)
-                let restRot = arkitRestLocalRot[joint].map(Self.q) ?? "-"
-                lines.append("\(label) \(joint.mixamoBoneName ?? "?") idx\(index) scale(\(Self.v(s))) \(detSign) bindRot \(bindRot) arkitRest \(restRot)")
+                let motion = (curW[joint].map { c in (c * (restW[joint] ?? .id).inverse).normalized }) ?? .id
+                lines.append("\(label) \(joint.mixamoBoneName ?? "?"): bindW \(Self.q(bindW[joint] ?? .id)) motionW \(Self.q(motion)) targetW \(Self.q(targetW[joint] ?? .id))")
             }
         }
         return lines.joined(separator: "\n")
