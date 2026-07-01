@@ -2,3 +2,6 @@
 .build/
 *.xcuserstate
 DerivedData/
+
+# Demo app
+Demo/*.xcodeproj

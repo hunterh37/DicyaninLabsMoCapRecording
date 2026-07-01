@@ -1,0 +1,36 @@
+name: MoCapRecorderDemo
+options:
+  bundleIdPrefix: com.dicyaninlabs
+  deploymentTarget:
+    iOS: "17.0"
+packages:
+  DicyaninLabsMoCapRecording:
+    path: ../
+targets:
+  MoCapRecorderDemo:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - MoCapRecorderDemo/Sources
+    dependencies:
+      - package: DicyaninLabsMoCapRecording
+    info:
+      path: MoCapRecorderDemo/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: MoCap Recorder
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        NSCameraUsageDescription: "This app uses the camera to record full-body motion capture with ARKit body tracking."
+        UIRequiredDeviceCapabilities:
+          - arkit
+          - arm64
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.dicyaninlabs.mocaprecorderdemo
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: 1
+        SWIFT_VERSION: "5.9"
