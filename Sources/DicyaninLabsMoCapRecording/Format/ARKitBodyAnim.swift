@@ -48,6 +48,26 @@ public struct ARKitBodyFrame: Codable, Sendable {
     public func localTransform(_ joint: ARKitBodyJoint) -> simd_float4x4? {
         localJoints[joint.rawValue]?.matrix
     }
+
+    /// Accumulated model-space (hips-relative) world transforms per joint, walking the
+    /// joint hierarchy. Independent of any target rig, so it reflects the RAW recording.
+    public func jointWorldTransforms() -> [ARKitBodyJoint: simd_float4x4] {
+        var world: [ARKitBodyJoint: simd_float4x4] = [:]
+        for joint in ARKitBodyJoint.allCases {
+            let local = localTransform(joint) ?? matrix_identity_float4x4
+            if let parent = joint.parent, let pw = world[parent] {
+                world[joint] = pw * local
+            } else {
+                world[joint] = local
+            }
+        }
+        return world
+    }
+
+    /// Raw model-space joint positions (meters), for rendering the recorded skeleton.
+    public func jointWorldPositions() -> [ARKitBodyJoint: SIMD3<Float>] {
+        jointWorldTransforms().mapValues { SIMD3($0.columns.3.x, $0.columns.3.y, $0.columns.3.z) }
+    }
 }
 
 /// The full `.arkitbodyanim` document. Serialized as JSON (optionally gzip-wrapped by callers).
