@@ -44,6 +44,21 @@ player.play()
 MoCapWirePlayerView(anim: anim, projection: .frontXY)
 ```
 
+## Debug view
+
+A self-contained inspector that works out of the box with a bundled sample clip (2D wireframe + a raw 3D skeleton rebuilt from recorded joint positions, no rig required):
+
+```swift
+MoCapDebugView()                       // bundled sample
+MoCapDebugView(animations: [myAnim])   // your own clips
+```
+
+Pass a rigged `ModelEntity` provider to also see the retarget drive it side by side, with a Rotation/Direction mode toggle:
+
+```swift
+MoCapDebugView(animations: clips) { await loadMyMixamoModel() }
+```
+
 ## `.arkitbodyanim` format
 
 Versioned JSON document: magic string, version, name, createdAt, frameRate, jointOrder, and per-frame root + parent-relative local joint transforms (4x4 column-major). Joint names match ARKit's `ARSkeleton.JointName` raw strings and map to Mixamo bone names via `ARKitBodyJoint.mixamoBoneName`.
