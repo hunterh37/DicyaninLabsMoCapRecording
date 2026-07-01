@@ -193,6 +193,39 @@ public final class RealityKitSkeletonDriver {
         indexToBone.sorted { $0.key < $1.key }.map(\.value)
     }
 
+    /// Side-by-side left vs right arm-chain dump to diagnose one-sided breakage.
+    /// Prints each bone's bind scale sign (reflection detector), bind local rotation,
+    /// and the ARKit rest local rotation, so a mirrored right-side bind stands out.
+    public func debugArmChains() -> String {
+        guard let model else { return "no model" }
+        let pairs: [(String, [ARKitBodyJoint])] = [
+            ("LEFT ", [.leftShoulder, .leftArm, .leftForearm, .leftHand]),
+            ("RIGHT", [.rightShoulder, .rightArm, .rightForearm, .rightHand]),
+        ]
+        var lines = ["=== Arm Chain Diagnostics ==="]
+        for (label, joints) in pairs {
+            for joint in joints {
+                guard let index = indexForJoint[joint], index < bindTransforms.count else {
+                    lines.append("\(label) \(joint.rawValue): no rig index"); continue
+                }
+                let t = bindTransforms[index]
+                let s = t.scale
+                let detSign = (s.x * s.y * s.z) < 0 ? "MIRRORED(neg-scale)" : "ok"
+                let bindRot = Self.q(t.rotation)
+                let restRot = arkitRestLocalRot[joint].map(Self.q) ?? "-"
+                lines.append("\(label) \(joint.mixamoBoneName ?? "?") idx\(index) scale(\(Self.v(s))) \(detSign) bindRot \(bindRot) arkitRest \(restRot)")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func q(_ q: simd_quatf) -> String {
+        String(format: "%.0f°(%.2f,%.2f,%.2f)", q.angle * 180 / .pi, q.axis.x, q.axis.y, q.axis.z)
+    }
+    private static func v(_ v: SIMD3<Float>) -> String {
+        String(format: "%.2f,%.2f,%.2f", v.x, v.y, v.z)
+    }
+
     /// A high-signal comparison dump: which ARKit joints the clip provides, which
     /// Mixamo bones the rig exposes, how they overlap, and per-bone bind vs retargeted
     /// rotation/translation for the key joints. Useful for diagnosing a mangled pose.
