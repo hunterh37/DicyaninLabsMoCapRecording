@@ -112,28 +112,45 @@ public struct SkeletonWireView: View {
     }
 }
 
-/// A self-contained player view: ticks a ``MoCapPlayer`` and renders the wireframe.
+/// A self-contained player view: samples an ``ARKitBodyAnim`` off the animation clock
+/// and renders the wireframe. Playback time is derived purely from the TimelineView
+/// date, so no observed state is mutated during view updates (avoids the SwiftUI
+/// "publishing changes from within view updates" hang).
 public struct MoCapWirePlayerView: View {
-    @StateObject private var player: MoCapPlayer
+    public let anim: ARKitBodyAnim
     public var projection: WireProjection
+    @State private var startDate = Date()
 
     public init(anim: ARKitBodyAnim, projection: WireProjection = .frontXY) {
-        _player = StateObject(wrappedValue: MoCapPlayer(anim: anim))
+        self.anim = anim
         self.projection = projection
     }
 
     public var body: some View {
-        TimelineView(.animation) { timeline in
-            let _ = player.advance(to: timeline.date)
-            Group {
-                if let frame = player.currentFrame {
-                    SkeletonWireView(frame: frame, projection: projection)
-                } else {
-                    Text("No frames")
+        Group {
+            if anim.frames.isEmpty || anim.duration <= 0 {
+                staticOrEmpty
+            } else {
+                TimelineView(.animation) { timeline in
+                    let t = timeline.date.timeIntervalSince(startDate)
+                        .truncatingRemainder(dividingBy: anim.duration)
+                    if let frame = anim.frame(at: t) {
+                        SkeletonWireView(frame: frame, projection: projection)
+                    } else {
+                        Color.clear
+                    }
                 }
             }
         }
-        .onAppear { player.play() }
+        .onAppear { startDate = Date() }
+    }
+
+    @ViewBuilder private var staticOrEmpty: some View {
+        if let frame = anim.frames.first {
+            SkeletonWireView(frame: frame, projection: projection)
+        } else {
+            Text("No frames")
+        }
     }
 }
 #endif
