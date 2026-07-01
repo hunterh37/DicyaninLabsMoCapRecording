@@ -12,6 +12,22 @@ struct RecorderRootView: View {
                 ARBodyPreview(session: vm.capture.session)
                     .ignoresSafeArea()
 
+                LiveSkeletonOverlay(snapshot: vm.liveBody)
+
+                if vm.isBodyTrackingSupported {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(vm.bodyDetected ? Color.green : Color.orange)
+                            .frame(width: 10, height: 10)
+                        Text(vm.bodyDetected ? "Body detected" : "Searching for body")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .padding(.top, 8)
+                }
+
                 if !vm.isBodyTrackingSupported {
                     Text("Body tracking not supported on this device.")
                         .font(.headline)

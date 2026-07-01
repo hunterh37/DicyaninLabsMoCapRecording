@@ -13,12 +13,20 @@ final class RecorderViewModel: ObservableObject {
     @Published var savedFiles: [URL] = []
     @Published var lastError: String?
     @Published var isBodyTrackingSupported = false
+    @Published var liveBody: LiveBodySnapshot?
+    @Published var bodyDetected = false
 
     private var cancellables: Set<AnyCancellable> = []
 
     init() {
         capture = ARBodyCaptureSession(recorder: recorder)
         isBodyTrackingSupported = capture.isSupported
+        capture.onLiveBody = { [weak self] snapshot in
+            Task { @MainActor in
+                self?.liveBody = snapshot
+                self?.bodyDetected = true
+            }
+        }
         recorder.$isRecording.receive(on: RunLoop.main).sink { [weak self] in self?.isRecording = $0 }.store(in: &cancellables)
         recorder.$frameCount.receive(on: RunLoop.main).sink { [weak self] in self?.frameCount = $0 }.store(in: &cancellables)
         recorder.$elapsed.receive(on: RunLoop.main).sink { [weak self] in self?.elapsed = $0 }.store(in: &cancellables)
