@@ -226,39 +226,36 @@ public final class RealityKitSkeletonDriver {
                 targetW[joint] = (cW * rW.inverse * bW).normalized
             }
 
-            // Pass B: refine limb chains. Aim (swing) comes from joint POSITIONS, which are
-            // unambiguous and mirror-safe. Roll (twist) is borrowed from the world-global
-            // orientation transfer, decomposed about the aimed bone axis so it cannot swing
-            // the arm sideways. directionMatch drops the twist (aim only) for comparison.
+            // Pass B: refine limb chains. The world-global transfer already carries the
+            // actor's true ROLL, but its aim is skewed by the ARKit/Mixamo bind mismatch
+            // (the "arms off to the side" bug). So keep the world-global orientation and
+            // only apply a corrective SWING that snaps its aim onto the direction derived
+            // from joint POSITIONS (unambiguous, mirror-safe). Roll is preserved exactly;
+            // aim is exact. Twist extraction is avoided entirely (it leaked bind swing into
+            // false roll and spun the hands). directionMatch drops roll (aim only).
             func pos(_ m: simd_float4x4) -> SIMD3<Float> { SIMD3(m.columns.3.x, m.columns.3.y, m.columns.3.z) }
             for (joint, child) in Self.directionChild {
                 guard let jMat = arkitCurMat[joint], let cMat = arkitCurMat[child],
                       let jb = bindMat[joint], let cb = bindMat[child],
-                      let bW = bindW[joint] else { continue }
+                      let bW = bindW[joint], let rotW = targetW[joint],
+                      let cW = arkitCurW[joint], let rW = arkitRestW[joint] else { continue }
                 let targetDir = simd_normalize(pos(cMat) - pos(jMat))
                 let bindDir = simd_normalize(pos(cb) - pos(jb))
                 guard targetDir.x.isFinite, bindDir.x.isFinite else { continue }
-                let swing = Self.rotation(from: bindDir, to: targetDir)
-                let aim = (swing * bW).normalized
-                // Roll is the actor's OWN twist from rest to current about the bone axis
-                // (twist of the pure ARKit world motion cW * restW⁻¹, which is identity at
-                // rest). Decomposing R_rot re-anchored on bind instead folds in the constant
-                // bind-axis roll mismatch, which spun the hands. This uses only the moving
-                // part, so it is zero when the actor is not twisting.
                 if mode == .directionMatch {
-                    targetW[joint] = aim
-                } else if let cW = arkitCurW[joint], let rW = arkitRestW[joint] {
-                    let roll = Self.twist(of: (cW * rW.inverse).normalized, about: targetDir)
-                    targetW[joint] = (roll * aim).normalized
-                }
-                if let end = Self.directionEnd[joint], let endBind = bindW[end] {
-                    let endAim = (swing * endBind).normalized
-                    if mode == .directionMatch {
-                        targetW[end] = endAim
-                    } else if let cW = arkitCurW[end], let rW = arkitRestW[end] {
-                        let endRoll = Self.twist(of: (cW * rW.inverse).normalized, about: targetDir)
-                        targetW[end] = (endRoll * endAim).normalized
+                    let swing = Self.rotation(from: bindDir, to: targetDir)
+                    targetW[joint] = (swing * bW).normalized
+                    if let end = Self.directionEnd[joint], let endBind = bindW[end] {
+                        targetW[end] = (swing * endBind).normalized
                     }
+                } else {
+                    // Direction the world-global orientation currently aims the bone: the
+                    // bind bone axis carried by the ARKit world motion. Correct it onto the
+                    // position-derived direction with a pure swing, leaving roll intact.
+                    let aimedDir = simd_normalize((cW * rW.inverse).act(bindDir))
+                    guard aimedDir.x.isFinite else { continue }
+                    let correction = Self.rotation(from: aimedDir, to: targetDir)
+                    targetW[joint] = (correction * rotW).normalized
                 }
             }
 
@@ -329,29 +326,19 @@ public final class RealityKitSkeletonDriver {
             targetW[joint] = (cW * rW.inverse * bW).normalized
         }
         func pos(_ m: simd_float4x4) -> SIMD3<Float> { SIMD3(m.columns.3.x, m.columns.3.y, m.columns.3.z) }
-        var aimW: [ARKitBodyJoint: simd_quatf] = [:]
-        var rollDeg: [ARKitBodyJoint: Float] = [:]
+        var corrDeg: [ARKitBodyJoint: Float] = [:]
         for (joint, child) in Self.directionChild {
             guard let jMat = curMat[joint], let cMat = curMat[child],
                   let jb = bindMat[joint], let cb = bindMat[child],
-                  let bW = bindW[joint], let cW = curW[joint], let rW = restW[joint] else { continue }
+                  let rotW = targetW[joint], let cW = curW[joint], let rW = restW[joint] else { continue }
             let targetDir = simd_normalize(pos(cMat) - pos(jMat))
             let bindDir = simd_normalize(pos(cb) - pos(jb))
             guard targetDir.x.isFinite, bindDir.x.isFinite else { continue }
-            let swing = Self.rotation(from: bindDir, to: targetDir)
-            let aim = (swing * bW).normalized
-            aimW[joint] = aim
-            let roll = Self.twist(of: (cW * rW.inverse).normalized, about: targetDir)
-            rollDeg[joint] = roll.angle * 180 / .pi
-            targetW[joint] = (roll * aim).normalized
-            if let end = Self.directionEnd[joint], let endBind = bindW[end],
-               let ecW = curW[end], let erW = restW[end] {
-                let endAim = (swing * endBind).normalized
-                aimW[end] = endAim
-                let endRoll = Self.twist(of: (ecW * erW.inverse).normalized, about: targetDir)
-                rollDeg[end] = endRoll.angle * 180 / .pi
-                targetW[end] = (endRoll * endAim).normalized
-            }
+            let aimedDir = simd_normalize((cW * rW.inverse).act(bindDir))
+            guard aimedDir.x.isFinite else { continue }
+            let correction = Self.rotation(from: aimedDir, to: targetDir)
+            corrDeg[joint] = correction.angle * 180 / .pi
+            targetW[joint] = (correction * rotW).normalized
         }
         let pairs: [(String, [ARKitBodyJoint])] = [
             ("LEFT ", [.leftShoulder, .leftArm, .leftForearm, .leftHand]),
@@ -361,10 +348,10 @@ public final class RealityKitSkeletonDriver {
         for (label, joints) in pairs {
             for joint in joints {
                 let bW = bindW[joint] ?? .id
-                let aim = aimW[joint] ?? .id
+                let gW = curW[joint].flatMap { c in restW[joint].map { r in (c * r.inverse * bW).normalized } } ?? .id
                 let tW = targetW[joint] ?? .id
-                let roll = rollDeg[joint].map { String(format: "%.0f°", $0) } ?? "n/a"
-                lines.append("\(label) \(joint.mixamoBoneName ?? "?"): bindW \(Self.q(bW)) aimW \(Self.q(aim)) roll \(roll) targetW \(Self.q(tW))")
+                let corr = corrDeg[joint].map { String(format: "%.0f°", $0) } ?? "n/a"
+                lines.append("\(label) \(joint.mixamoBoneName ?? "?"): bindW \(Self.q(bW)) worldGlobal \(Self.q(gW)) reaim \(corr) targetW \(Self.q(tW))")
             }
         }
         return lines.joined(separator: "\n")
