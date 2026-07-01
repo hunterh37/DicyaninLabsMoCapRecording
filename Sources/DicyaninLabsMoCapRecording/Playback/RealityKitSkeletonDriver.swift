@@ -125,6 +125,10 @@ public final class RealityKitSkeletonDriver {
         .leftUpLeg: .leftLeg, .leftLeg: .leftFoot,
         .rightUpLeg: .rightLeg, .rightLeg: .rightFoot,
     ]
+    /// Wrist joints. ARKit body tracking has no dependable rotation here, so they keep
+    /// their bind-local rotation and rigidly follow the driven forearm.
+    static let handJoints: Set<ARKitBodyJoint> = [.leftHand, .rightHand]
+
     /// Right arm chain. Mixamo mirrors this side's local bone axes, so it needs the
     /// bone-local composition order while the left/torso use the world-space order.
     static let rightArmChain: Set<ARKitBodyJoint> = [
@@ -240,13 +244,19 @@ public final class RealityKitSkeletonDriver {
                 }
             }
 
-            // Pass C: write parent-relative local rotations, parent-first.
+            // Pass C: write parent-relative local rotations, parent-first. ARKit body
+            // tracking carries no reliable wrist rotation, so the transferred hand
+            // orientation is noise. Keep each hand at its BIND local rotation instead, so
+            // it rigidly follows the driven forearm at the natural bind angle (hand points
+            // forward when the forearm does) rather than flopping to a garbage angle.
             for joint in primaryJoints {
                 guard let index = indexForJoint[joint], index < transforms.count,
                       index < bindTransforms.count, let tW = targetW[joint] else { continue }
-                let parentTW = parentPrimary[joint].flatMap { targetW[$0] } ?? .id
                 var t = bindTransforms[index]
-                t.rotation = (parentTW.inverse * tW).normalized
+                if !Self.handJoints.contains(joint) {
+                    let parentTW = parentPrimary[joint].flatMap { targetW[$0] } ?? .id
+                    t.rotation = (parentTW.inverse * tW).normalized
+                }
                 transforms[index] = t
             }
             model.jointTransforms = transforms
