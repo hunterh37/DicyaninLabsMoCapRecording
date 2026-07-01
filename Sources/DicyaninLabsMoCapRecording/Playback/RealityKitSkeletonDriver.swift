@@ -153,9 +153,13 @@ public final class RealityKitSkeletonDriver {
                 arkitCurWorld[joint] = curW
                 mixamoBindWorld[joint] = bindW
 
-                // Motion the bone underwent, in world space, applied onto Mixamo bind world.
-                let motionWorld = (curW * restW.inverse).normalized
-                let targetW = (motionWorld * bindW).normalized
+                // Anatomical transfer: the source bone's deviation from its rest, measured
+                // in the bone's OWN frame (`restW⁻¹ * curW`, right-multiply), applied onto
+                // the Mixamo bind. This transfers joint angles and is inherently mirror-
+                // correct, unlike a world-global motion (`curW*restW⁻¹ * bind`) which only
+                // works when the two rigs' rest poses point the same way (true for the left
+                // arm, false for the right — hence the right arm was over-rotating).
+                let targetW = (bindW * restW.inverse * curW).normalized
                 mixamoTargetWorld[joint] = targetW
 
                 // Back to a parent-relative local rotation for the rig.
@@ -215,8 +219,7 @@ public final class RealityKitSkeletonDriver {
             let cW = (pcW * curLocal).normalized
             let bW = (pbW * bindLocal).normalized
             restW[joint] = rW; curW[joint] = cW; bindW[joint] = bW
-            let motion = (cW * rW.inverse).normalized
-            let tW = (motion * bW).normalized
+            let tW = (bW * rW.inverse * cW).normalized
             targetW[joint] = tW
             _ = ptW
         }
