@@ -1,10 +1,10 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 import PackageDescription
 
 let package = Package(
     name: "DicyaninLabsMoCapRecording",
     platforms: [
-        .iOS(.v17),
+        .iOS(.v18),
         .visionOS(.v1),
         .macOS(.v14)
     ],

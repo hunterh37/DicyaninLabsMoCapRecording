@@ -135,6 +135,19 @@ public final class RealityKitSkeletonDriver {
         .rightShoulder, .rightArm, .rightForearm, .rightHand,
     ]
 
+    /// The hips are the one bone with no parent to correct for, so any axis-basis
+    /// mismatch between ARKit's world convention and Mixamo's shows up there directly
+    /// (e.g. a forward lean reading as a sideways lean) instead of self-correcting the
+    /// way child-bone deltas do. Default OFF — this only changes behavior when a caller
+    /// opts in via `hipsUsesBoneLocalOrder`, so existing clips are unaffected until it's
+    /// confirmed to actually fix the lean-axis issue on device.
+    static let torsoChain: Set<ARKitBodyJoint> = [.hips]
+
+    /// Opt-in alternate composition order for `torsoChain` (same trick already used for
+    /// `rightArmChain`), for diagnosing/fixing body-lean showing up on the wrong axis.
+    /// Leave `false` unless you've confirmed on device that flipping it corrects the lean.
+    public var hipsUsesBoneLocalOrder: Bool = false
+
     /// End bones (no child) that should inherit their parent bone's swing.
     static let directionEnd: [ARKitBodyJoint: ARKitBodyJoint] = [
         .leftForearm: .leftHand, .rightForearm: .rightHand,
@@ -220,6 +233,8 @@ public final class RealityKitSkeletonDriver {
                 // bone-local order bindW * restW⁻¹ * curW. Both are no-ops at the reference
                 // frame. Splitting per-side keeps the working left arm untouched.
                 if Self.rightArmChain.contains(joint) {
+                    targetW[joint] = (bW * rW.inverse * cW).normalized
+                } else if hipsUsesBoneLocalOrder && Self.torsoChain.contains(joint) {
                     targetW[joint] = (bW * rW.inverse * cW).normalized
                 } else {
                     targetW[joint] = (cW * rW.inverse * bW).normalized

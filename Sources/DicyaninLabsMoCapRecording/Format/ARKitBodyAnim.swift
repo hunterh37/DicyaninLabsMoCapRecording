@@ -30,6 +30,42 @@ public struct AnimTransform: Codable, Sendable, Equatable {
     }
 }
 
+/// A single captured hand pose (visionOS hand tracking) at a point in time.
+public struct ARKitHandFrame: Codable, Sendable {
+    /// World transform of the hand anchor (`originFromAnchorTransform`, i.e. the wrist).
+    public var rootTransform: AnimTransform
+    /// Parent-relative joint transforms keyed by ``ARKitHandJoint`` raw name.
+    public var localJoints: [String: AnimTransform]
+
+    public init(rootTransform: AnimTransform, localJoints: [String: AnimTransform]) {
+        self.rootTransform = rootTransform
+        self.localJoints = localJoints
+    }
+
+    public func localTransform(_ joint: ARKitHandJoint) -> simd_float4x4? {
+        localJoints[joint.rawValue]?.matrix
+    }
+
+    /// Accumulated anchor-space world transforms per joint, walking the finger hierarchy.
+    public func jointWorldTransforms() -> [ARKitHandJoint: simd_float4x4] {
+        var world: [ARKitHandJoint: simd_float4x4] = [:]
+        for joint in ARKitHandJoint.allCases {
+            let local = localTransform(joint) ?? matrix_identity_float4x4
+            if let parent = joint.parent, let pw = world[parent] {
+                world[joint] = pw * local
+            } else {
+                world[joint] = local
+            }
+        }
+        return world
+    }
+
+    /// Raw anchor-space joint positions (meters), for rendering the recorded hand.
+    public func jointWorldPositions() -> [ARKitHandJoint: SIMD3<Float>] {
+        jointWorldTransforms().mapValues { SIMD3($0.columns.3.x, $0.columns.3.y, $0.columns.3.z) }
+    }
+}
+
 /// A single captured pose at a point in time.
 public struct ARKitBodyFrame: Codable, Sendable {
     /// Seconds since the start of the recording.
@@ -38,11 +74,27 @@ public struct ARKitBodyFrame: Codable, Sendable {
     public var rootTransform: AnimTransform
     /// Local (parent-relative) joint transforms keyed by joint raw name.
     public var localJoints: [String: AnimTransform]
+    /// Left-hand finger pose, when hand tracking was in frame at capture time.
+    public var leftHand: ARKitHandFrame?
+    /// Right-hand finger pose, when hand tracking was in frame at capture time.
+    public var rightHand: ARKitHandFrame?
 
-    public init(time: TimeInterval, rootTransform: AnimTransform, localJoints: [String: AnimTransform]) {
+    public init(
+        time: TimeInterval,
+        rootTransform: AnimTransform,
+        localJoints: [String: AnimTransform],
+        leftHand: ARKitHandFrame? = nil,
+        rightHand: ARKitHandFrame? = nil
+    ) {
         self.time = time
         self.rootTransform = rootTransform
         self.localJoints = localJoints
+        self.leftHand = leftHand
+        self.rightHand = rightHand
+    }
+
+    public func hand(_ chirality: ARKitHandChirality) -> ARKitHandFrame? {
+        chirality == .left ? leftHand : rightHand
     }
 
     public func localTransform(_ joint: ARKitBodyJoint) -> simd_float4x4? {

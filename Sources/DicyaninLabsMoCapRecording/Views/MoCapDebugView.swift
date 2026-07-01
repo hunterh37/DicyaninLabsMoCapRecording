@@ -63,7 +63,7 @@ public struct MoCapDebugView: View {
                     }
                     labeled("2D Wireframe") {
                         if let anim = current {
-                            MoCapWirePlayerView(anim: anim)
+                            MoCapHandsWirePlayerView(anim: anim)
                                 .padding(8)
                                 .frame(width: 240)
                                 .background(.black, in: RoundedRectangle(cornerRadius: 16))
@@ -132,6 +132,8 @@ struct RawSkeletonView: View {
     let anim: ARKitBodyAnim?
     @State private var spheres: [ARKitBodyJoint: ModelEntity] = [:]
     @State private var bones: [ModelEntity] = []
+    @State private var handSpheres: [ARKitHandChirality: [ARKitHandJoint: ModelEntity]] = [:]
+    @State private var handBones: [ARKitHandChirality: [ModelEntity]] = [:]
     @State private var startDate = Date()
 
     var body: some View {
@@ -152,6 +154,27 @@ struct RawSkeletonView: View {
                 container.addChild(e); b.append(e)
             }
             spheres = s; bones = b
+
+            // Finger joints are much smaller than body joints, so give hands their own
+            // (tinier) meshes and a color that distinguishes them from the body skeleton.
+            let handJointMat = SimpleMaterial(color: .yellow, isMetallic: false)
+            let handBoneMat = SimpleMaterial(color: .orange, isMetallic: false)
+            var hs: [ARKitHandChirality: [ARKitHandJoint: ModelEntity]] = [:]
+            var hb: [ARKitHandChirality: [ModelEntity]] = [:]
+            for chirality in ARKitHandChirality.allCases {
+                var js: [ARKitHandJoint: ModelEntity] = [:]
+                for j in ARKitHandJoint.allCases {
+                    let e = ModelEntity(mesh: .generateSphere(radius: 0.006), materials: [handJointMat])
+                    container.addChild(e); js[j] = e
+                }
+                var bs: [ModelEntity] = []
+                for _ in ARKitHandJoint.allCases {
+                    let e = ModelEntity(mesh: .generateBox(size: [0.004, 1, 0.004]), materials: [handBoneMat])
+                    container.addChild(e); bs.append(e)
+                }
+                hs[chirality] = js; hb[chirality] = bs
+            }
+            handSpheres = hs; handBones = hb
         }
         .overlay {
             TimelineView(.animation) { timeline in
@@ -184,6 +207,39 @@ struct RawSkeletonView: View {
             bone.position = (pa + pb) / 2
             bone.scale = SIMD3<Float>(1, len, 1)
             bone.orientation = RealityKitSkeletonDriver.rotation(from: SIMD3<Float>(0, 1, 0), to: dir / len)
+        }
+
+        for chirality in ARKitHandChirality.allCases {
+            guard let handFrame = frame.hand(chirality),
+                  let js = handSpheres[chirality], let bs = handBones[chirality] else {
+                handSpheres[chirality]?.values.forEach { $0.isEnabled = false }
+                handBones[chirality]?.forEach { $0.isEnabled = false }
+                continue
+            }
+            // Anchor the hand's own local hierarchy at the body's corresponding hand
+            // joint (falling back to the origin if there's no body data in this clip).
+            let bodyJoint: ARKitBodyJoint = chirality == .left ? .leftHand : .rightHand
+            let anchor = (positions[bodyJoint] ?? .zero) - hips
+            let handPositions = handFrame.jointWorldPositions()
+            for (j, e) in js {
+                e.isEnabled = true
+                e.position = anchor + handPositions[j, default: .zero]
+            }
+            for (i, j) in ARKitHandJoint.allCases.enumerated() where i < bs.count {
+                let bone = bs[i]
+                guard let parent = j.parent,
+                      let a = handPositions[j], let b = handPositions[parent] else {
+                    bone.isEnabled = false; continue
+                }
+                let pa = anchor + a, pb = anchor + b
+                let dir = pb - pa
+                let len = simd_length(dir)
+                guard len > 1e-5 else { bone.isEnabled = false; continue }
+                bone.isEnabled = true
+                bone.position = (pa + pb) / 2
+                bone.scale = SIMD3<Float>(1, len, 1)
+                bone.orientation = RealityKitSkeletonDriver.rotation(from: SIMD3<Float>(0, 1, 0), to: dir / len)
+            }
         }
     }
 }

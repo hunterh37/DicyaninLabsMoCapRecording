@@ -1,6 +1,23 @@
 import Foundation
 import simd
 
+/// Externally-supplied hand pose for a single capture, before packing into a frame.
+/// `root` is the hand anchor world transform (`originFromAnchorTransform`);
+/// `localJoints` are parent-relative transforms keyed by ``ARKitHandJoint`` raw name.
+public struct HandCapture: Sendable {
+    public var root: simd_float4x4
+    public var localJoints: [String: simd_float4x4]
+
+    public init(root: simd_float4x4, localJoints: [String: simd_float4x4]) {
+        self.root = root
+        self.localJoints = localJoints
+    }
+
+    public var frame: ARKitHandFrame {
+        ARKitHandFrame(rootTransform: AnimTransform(root), localJoints: localJoints.mapValues(AnimTransform.init))
+    }
+}
+
 /// Records ARKit body-tracking frames into an ``ARKitBodyAnim`` document.
 ///
 /// Platform note: live capture via `ARBodyTrackingConfiguration` is iOS-only. On other
@@ -43,6 +60,8 @@ public final class MoCapRecorder: ObservableObject {
     public func append(
         rootTransform: simd_float4x4,
         localJoints: [String: simd_float4x4],
+        leftHand: HandCapture? = nil,
+        rightHand: HandCapture? = nil,
         timestamp: TimeInterval? = nil
     ) {
         guard isRecording else { return }
@@ -50,11 +69,29 @@ public final class MoCapRecorder: ObservableObject {
         let frame = ARKitBodyFrame(
             time: t,
             rootTransform: AnimTransform(rootTransform),
-            localJoints: localJoints.mapValues(AnimTransform.init)
+            localJoints: localJoints.mapValues(AnimTransform.init),
+            leftHand: leftHand?.frame,
+            rightHand: rightHand?.frame
         )
         frames.append(frame)
         frameCount = frames.count
         elapsed = t
+    }
+
+    /// Append a hands-only pose (visionOS, where there is no ARKit body anchor). The body
+    /// root is identity and body joints are empty; hand finger data drives the frame.
+    public func appendHands(
+        leftHand: HandCapture? = nil,
+        rightHand: HandCapture? = nil,
+        timestamp: TimeInterval? = nil
+    ) {
+        append(
+            rootTransform: matrix_identity_float4x4,
+            localJoints: [:],
+            leftHand: leftHand,
+            rightHand: rightHand,
+            timestamp: timestamp
+        )
     }
 
     @discardableResult

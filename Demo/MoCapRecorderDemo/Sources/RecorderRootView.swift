@@ -13,13 +13,16 @@ struct RecorderRootView: View {
                     .ignoresSafeArea()
 
                 LiveSkeletonOverlay(snapshot: vm.liveBody)
+                LiveHandOverlay(left: vm.liveLeftHand, right: vm.liveRightHand)
 
                 if vm.isBodyTrackingSupported {
                     HStack(spacing: 8) {
-                        Circle()
-                            .fill(vm.bodyDetected ? Color.green : Color.orange)
-                            .frame(width: 10, height: 10)
+                        statusDot(vm.bodyDetected)
                         Text(vm.bodyDetected ? "Body detected" : "Searching for body")
+                            .font(.caption.weight(.semibold))
+                        Divider().frame(height: 12)
+                        statusDot(vm.leftHandDetected || vm.rightHandDetected)
+                        Text(handDetectedLabel)
                             .font(.caption.weight(.semibold))
                     }
                     .padding(.horizontal, 12).padding(.vertical, 6)
@@ -55,6 +58,21 @@ struct RecorderRootView: View {
                     .background(Color.black)
                     .navigationTitle(anim.name)
             }
+        }
+    }
+
+    private func statusDot(_ active: Bool) -> some View {
+        Circle()
+            .fill(active ? Color.green : Color.orange)
+            .frame(width: 10, height: 10)
+    }
+
+    private var handDetectedLabel: String {
+        switch (vm.leftHandDetected, vm.rightHandDetected) {
+        case (true, true): return "Both hands detected"
+        case (true, false): return "Left hand detected"
+        case (false, true): return "Right hand detected"
+        case (false, false): return "Searching for hands"
         }
     }
 

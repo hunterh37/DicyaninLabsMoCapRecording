@@ -15,6 +15,10 @@ final class RecorderViewModel: ObservableObject {
     @Published var isBodyTrackingSupported = false
     @Published var liveBody: LiveBodySnapshot?
     @Published var bodyDetected = false
+    @Published var leftHandDetected = false
+    @Published var rightHandDetected = false
+    @Published var liveLeftHand: LiveHandSnapshot?
+    @Published var liveRightHand: LiveHandSnapshot?
 
     private var cancellables: Set<AnyCancellable> = []
 
@@ -25,6 +29,14 @@ final class RecorderViewModel: ObservableObject {
             Task { @MainActor in
                 self?.liveBody = snapshot
                 self?.bodyDetected = true
+            }
+        }
+        capture.onLiveHands = { [weak self] left, right in
+            Task { @MainActor in
+                self?.leftHandDetected = left != nil
+                self?.rightHandDetected = right != nil
+                self?.liveLeftHand = left
+                self?.liveRightHand = right
             }
         }
         recorder.$isRecording.receive(on: RunLoop.main).sink { [weak self] in self?.isRecording = $0 }.store(in: &cancellables)
