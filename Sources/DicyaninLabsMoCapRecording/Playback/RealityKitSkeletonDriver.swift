@@ -78,9 +78,11 @@ public final class RealityKitSkeletonDriver {
     /// close to a fixed reference pose and carries little of the actor's actual lean —
     /// the real body orientation (forward lean, turning, etc.) lives in the frame's
     /// `rootTransform` (the body ANCHOR's world transform), which this retarget never
-    /// reads otherwise. Default OFF so existing playback is unaffected until confirmed;
-    /// turn on to fold the anchor's world rotation into the hips seed.
-    public var appliesRootRotationToHips: Bool = false
+    /// reads otherwise. Default ON: the anchor's rotation delta (vs the reference frame)
+    /// is folded into the WRITTEN hips rotation only, in the bone-local frame, so the
+    /// whole body inherits the lean through the hierarchy while every child's
+    /// parent-relative pose stays untouched.
+    public var appliesRootRotationToHips: Bool = true
 
     public var hasRestPose: Bool { !arkitRestLocalRot.isEmpty }
 
@@ -153,9 +155,8 @@ public final class RealityKitSkeletonDriver {
     /// The hips are the one bone with no parent to correct for, so any axis-basis
     /// mismatch between ARKit's world convention and Mixamo's shows up there directly
     /// (e.g. a forward lean reading as a sideways lean) instead of self-correcting the
-    /// way child-bone deltas do. Default OFF — this only changes behavior when a caller
-    /// opts in via `hipsUsesBoneLocalOrder`, so existing clips are unaffected until it's
-    /// confirmed to actually fix the lean-axis issue on device.
+    /// way child-bone deltas do. The root-lean fold (`appliesRootRotationToHips`) and
+    /// the diagnostic `hipsUsesBoneLocalOrder` both key off this set.
     static let torsoChain: Set<ARKitBodyJoint> = [.hips]
 
     /// Opt-in alternate composition order for `torsoChain` (same trick already used for
@@ -216,6 +217,11 @@ public final class RealityKitSkeletonDriver {
             var targetW: [ARKitBodyJoint: simd_quatf] = [:]
             var arkitCurMat: [ARKitBodyJoint: simd_float4x4] = [:]
             var bindMat: [ARKitBodyJoint: simd_float4x4] = [:]
+            // Written-rotation overrides (world space). Used for the hips root-lean fold:
+            // the override goes into the WRITTEN transform while `targetW` stays unfolded,
+            // so children computed relative to `targetW` keep their pose and inherit the
+            // lean through the joint hierarchy instead of counter-rotating against it.
+            var writtenW: [ARKitBodyJoint: simd_quatf] = [:]
 
             // Pass A: accumulate world rotations + world matrices (for positions), and set
             // a default world-global target for every joint.
@@ -231,12 +237,8 @@ public final class RealityKitSkeletonDriver {
                 let pCurMat = parent.flatMap { arkitCurMat[$0] } ?? matrix_identity_float4x4
                 let pBindMat = parent.flatMap { bindMat[$0] } ?? matrix_identity_float4x4
 
-                var rW = (pRestW * restLocal).normalized
-                var cW = (pCurW * simd_quatf(curMatLocal)).normalized
-                if appliesRootRotationToHips && Self.torsoChain.contains(joint) {
-                    rW = (restRootRotation * rW).normalized
-                    cW = (simd_quatf(frame.rootTransform.matrix) * cW).normalized
-                }
+                let rW = (pRestW * restLocal).normalized
+                let cW = (pCurW * simd_quatf(curMatLocal)).normalized
                 let bW = (pBindW * (mixamoBindLocalRot[joint] ?? .id)).normalized
                 arkitRestW[joint] = rW
                 arkitCurW[joint] = cW
@@ -257,6 +259,18 @@ public final class RealityKitSkeletonDriver {
                     targetW[joint] = (bW * rW.inverse * cW).normalized
                 } else {
                     targetW[joint] = (cW * rW.inverse * bW).normalized
+                }
+
+                // Root-lean fold: the body anchor's rotation delta vs the reference frame
+                // (the actor's real lean/turn), expressed in the ARKit hips REST frame and
+                // re-applied in the Mixamo hips bind frame. Both hips frames are
+                // anatomically aligned, so forward lean maps to forward lean regardless of
+                // which way the actor happened to face in ARKit world space. It is a no-op
+                // at the reference frame (full = rest there).
+                if appliesRootRotationToHips && Self.torsoChain.contains(joint) {
+                    let rFull = (restRootRotation * rW).normalized
+                    let cFull = (simd_quatf(frame.rootTransform.matrix) * cW).normalized
+                    writtenW[joint] = (bW * rFull.inverse * cFull).normalized
                 }
             }
 
@@ -298,7 +312,12 @@ public final class RealityKitSkeletonDriver {
                     t.rotation = .id
                 } else {
                     let parentTW = parentPrimary[joint].flatMap { targetW[$0] } ?? .id
-                    t.rotation = (parentTW.inverse * tW).normalized
+                    // A written override (hips root-lean fold) replaces the world target
+                    // for THIS bone's written rotation only; children still resolve
+                    // against the unfolded `targetW`, so the lean propagates down the
+                    // hierarchy without disturbing any child's parent-relative pose.
+                    let outW = writtenW[joint] ?? tW
+                    t.rotation = (parentTW.inverse * outW).normalized
                 }
                 transforms[index] = t
             }

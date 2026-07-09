@@ -35,7 +35,10 @@ final class ARKitBodyAnimTests: XCTestCase {
     func test_frameAt_returnsNearestFrame() {
         var anim = ARKitBodyAnim(name: "t")
         anim.frames = (0..<5).map { sampleFrame(time: TimeInterval($0)) }
-        XCTAssertEqual(anim.frame(at: 2.4)?.time, 3)
+        XCTAssertEqual(anim.frame(at: 2.4)?.time, 2)
+        XCTAssertEqual(anim.frame(at: 2.6)?.time, 3)
+        XCTAssertEqual(anim.frame(at: -1)?.time, 0)
+        XCTAssertEqual(anim.frame(at: 99)?.time, 4)
         XCTAssertEqual(anim.duration, 4)
     }
 
@@ -49,9 +52,15 @@ final class ARKitBodyAnimTests: XCTestCase {
         }
     }
 
-    func test_mixamoMapping_coversAllJoints() {
+    func test_mixamoMapping_coversAllJointsExceptRoot() {
         for joint in ARKitBodyJoint.allCases {
-            XCTAssertNotNil(joint.mixamoBoneName, "\(joint) missing Mixamo mapping")
+            if joint == .root {
+                // root is deliberately unmapped so hips_joint is the primary driver
+                // of the Mixamo Hips bone (root is always identity in recordings).
+                XCTAssertNil(joint.mixamoBoneName)
+            } else {
+                XCTAssertNotNil(joint.mixamoBoneName, "\(joint) missing Mixamo mapping")
+            }
         }
     }
 

@@ -17,7 +17,10 @@ public struct AnimTransform: Codable, Sendable, Equatable {
     public init(m: [Float]) { self.m = m }
 
     public var matrix: simd_float4x4 {
-        simd_float4x4(
+        // Defend against malformed/hand-edited files: a decoded transform with the
+        // wrong element count would crash on subscript instead of failing gracefully.
+        guard m.count == 16 else { return matrix_identity_float4x4 }
+        return simd_float4x4(
             SIMD4<Float>(m[0], m[1], m[2], m[3]),
             SIMD4<Float>(m[4], m[5], m[6], m[7]),
             SIMD4<Float>(m[8], m[9], m[10], m[11]),
@@ -26,7 +29,8 @@ public struct AnimTransform: Codable, Sendable, Equatable {
     }
 
     public var translation: SIMD3<Float> {
-        SIMD3<Float>(m[12], m[13], m[14])
+        guard m.count == 16 else { return .zero }
+        return SIMD3<Float>(m[12], m[13], m[14])
     }
 }
 
@@ -227,6 +231,11 @@ public extension ARKitBodyAnim {
         while lo < hi {
             let mid = (lo + hi) / 2
             if frames[mid].time < time { lo = mid + 1 } else { hi = mid }
+        }
+        // Binary search lands on the first frame at/after `time`; the previous frame
+        // may be strictly nearer. Pick the closer of the two.
+        if lo > 0, abs(frames[lo - 1].time - time) < abs(frames[lo].time - time) {
+            return frames[lo - 1]
         }
         return frames[lo]
     }

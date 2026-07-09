@@ -48,6 +48,9 @@ public final class MoCapRecorder: ObservableObject {
 
     public func start(name: String) {
         self.name = name
+        // Re-capture the rest pose per take: a stale pose from a previous ARKit session
+        // (different actor/scale estimation) would skew delta retargeting for this one.
+        restPose = nil
         frames.removeAll(keepingCapacity: true)
         frameCount = 0
         elapsed = 0

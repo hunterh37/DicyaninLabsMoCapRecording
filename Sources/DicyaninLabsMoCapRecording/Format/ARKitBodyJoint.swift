@@ -79,7 +79,12 @@ public enum ARKitBodyJoint: String, Codable, CaseIterable, Sendable {
     /// Used to drive existing Mixamo-rigged nurse animations from recorded body data.
     public var mixamoBoneName: String? {
         switch self {
-        case .root, .hips: return "Hips"
+        // `root` is intentionally unmapped: it is always identity in recordings, and
+        // mapping it to "Hips" made it the PRIMARY joint for the Hips bone in the
+        // skeleton driver, which silently discarded the real `hips_joint` motion
+        // (the pelvis never leaned forward on playback).
+        case .root: return nil
+        case .hips: return "Hips"
         case .spine1, .spine2: return "Spine"
         case .spine3, .spine4: return "Spine1"
         case .spine5, .spine6, .spine7: return "Spine2"
